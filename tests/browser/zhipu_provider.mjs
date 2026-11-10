@@ -38,6 +38,15 @@ for (const config of await call("/api/model-configs")) {
 }
 await mkdir(output, { recursive: true });
 const projectId = crypto.randomUUID();
+async function createPickerProject(locale) {
+  const id = crypto.randomUUID();
+  await call("/api/creation/projects/" + id + "/commands", {
+    method: "POST",
+    body: { commandId: crypto.randomUUID(), projectId: id, type: "project.create",
+      payload: { name: "Zhipu picker " + locale + " " + id.slice(0, 8) } },
+  });
+  return id;
+}
 await call(`/api/creation/projects/${projectId}/commands`, {
   method: "POST",
   body: { commandId: crypto.randomUUID(), projectId, type: "project.create",
@@ -59,7 +68,8 @@ const copy = {
   },
 };
 const browser = await launchBrowser();
-const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } });
+const context = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
+const page = await context.newPage();
 page.setDefaultTimeout(15000);
 await page.addInitScript(() => {
   localStorage.setItem("opendirector.modelSetup.v1", "dismissed");
@@ -74,7 +84,6 @@ const provider = labels => page.getByRole("combobox", { name: labels.provider, e
 // Filter an option card by its checkbox so glm-5.3 does not substring-match glm-5.3-flash.
 const optionRow = modelId =>
   page.locator(".cw-model-option").filter({ has: page.getByRole("checkbox", { name: modelId, exact: true }) });
-const pickerRow = page.getByRole("menuitemradio", { name: "glm-5.3", exact: true });
 async function brandLogo(image) {
   await image.waitFor();
   await image.evaluate(element => element.decode());
@@ -140,27 +149,54 @@ async function proveManualAdd(labels, locale) {
   await page.getByRole("button", { name: labels.cancel, exact: true }).click();
   await page.getByRole("button", { name: labels.add, exact: true }).waitFor();
 }
-async function proveAgentPicker(labels) {
-  // The picker runtime inventory is a response fixture. The Default group lists the
-  // saved agent model configs from the real API, so no provider endpoint is contacted.
-  await page.route(/\/assistant\/runtimes$/, route => route.fulfill({
-    json: [{
-      id: "default", label: "Default", group: "default", modelSource: "settings",
-      available: true, status: "ready", modelOverride: false,
-    }],
-  }));
-  await page.getByRole("button", { name: labels.chatEntry, exact: true }).click();
-  const agentButton = page.getByRole("button", { name: /^Agent[:：]/ });
-  await agentButton.click();
-  await brandLogo(pickerRow.locator("img.cw-model-logo"));
-  await pickerRow.click();
-  await agentButton.click();
-  assert.equal(
-    await pickerRow.getAttribute("aria-checked"),
-    "true", "Saved Zhipu model stays selected in the assistant picker",
-  );
-  await shot("zh-CN-mock-zhipu-agent-picker.png");
-  await page.keyboard.press("Escape");
+async function proveAgentPicker(labels, locale) {
+  // Each locale gets a fresh page. The browser context still shares the saved
+  // model configuration. A separate project avoids competing for the current
+  // project's single editing lease.
+  const pickerProjectId = await createPickerProject(locale);
+  const pickerPage = await context.newPage();
+  pickerPage.setDefaultTimeout(15000);
+  pickerPage.on("request", request => requests.push(request.url()));
+  pickerPage.on("pageerror", error => errors.push(error.message));
+  await pickerPage.addInitScript(({ locale: pickerLocale }) => {
+    localStorage.setItem("opendirector.modelSetup.v1", "dismissed");
+    localStorage.setItem("opendirector.locale.v1", pickerLocale);
+  }, { locale });
+
+  try {
+    // The picker runtime inventory is a response fixture. The Default group lists
+    // the saved agent model configs from the real API, so no provider endpoint is contacted.
+    await pickerPage.route(/\/assistant\/runtimes$/, route => route.fulfill({
+      json: [{
+        id: "default", label: "Default", group: "default", modelSource: "settings",
+        available: true, status: "ready", modelOverride: false,
+      }],
+    }));
+    await pickerPage.goto(base + "/ai-tool/ai-canvas/" + pickerProjectId + "?creation=unified");
+    await pickerPage.locator('.cw-workspace[aria-busy="false"]').waitFor();
+    const pickerRow = pickerPage.getByRole("menuitemradio", { name: "glm-5.3", exact: true });
+    const chatButton = pickerPage.getByRole("button", { name: labels.chatEntry, exact: true });
+    if (await chatButton.getAttribute("aria-expanded") !== "true")
+      await chatButton.click();
+    const agentButton = pickerPage.getByRole("button", { name: /^Agent[:：]/ });
+    await agentButton.click();
+    await brandLogo(pickerRow.locator("img.cw-model-logo"));
+    await pickerRow.click();
+    await agentButton.click();
+    assert.equal(
+      await pickerRow.getAttribute("aria-checked"),
+      "true", "Saved Zhipu model stays selected in the assistant picker",
+    );
+    await pickerPage.screenshot({
+      path: join(output, locale + "-mock-zhipu-agent-picker.png"),
+      fullPage: true,
+    });
+    await pickerPage.keyboard.press("Escape");
+    if (await chatButton.getAttribute("aria-expanded") === "true")
+      await chatButton.click({ force: true });
+  } finally {
+    await pickerPage.close().catch(() => {});
+  }
 }
 
 try {
@@ -183,7 +219,7 @@ try {
   await proveReopen(zh, "zh-CN");
   await proveManualAdd(zh, "zh-CN");
   await page.getByRole("button", { name: zh.close, exact: true }).click();
-  await proveAgentPicker(zh);
+  await proveAgentPicker(zh, "zh-CN");
 
   await page.getByRole("button", { name: zh.settings, exact: true }).click();
   await page.getByRole("button", { name: zh.models, exact: true }).click();
@@ -197,7 +233,7 @@ try {
   await proveReopen(en, "en-US");
   await proveManualAdd(en, "en-US");
   await page.getByRole("button", { name: en.close, exact: true }).click();
-  await proveAgentPicker(en);
+  await proveAgentPicker(en, "en-US");
   assert.ok(!requests.some(url => new URL(url).hostname === "open.bigmodel.cn"), "Browser must not contact the model provider");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, fixture: true, generation: "not submitted", base, api,
