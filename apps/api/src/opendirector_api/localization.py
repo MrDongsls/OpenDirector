@@ -9,6 +9,14 @@ from fastapi import Request
 from opendirector.domain.creation.commands import CommandReceipt
 
 ENGLISH_BY_CODE = {
+    'kling_model': 'This Kling protocol does not support the selected model.',
+    'kling_mode': 'Kling currently supports first/last frames and image-reference generation.',
+    'kling_image': 'Kling requires valid PNG or JPEG images up to 30 MB, at least 300 pixels on each edge, with an aspect ratio of 0.4–2.5. Video and audio references are not supported here.',
+    'kling_frames': 'Choose frame inputs supported by the selected Kling model. Each slot accepts one image, and a last frame requires a first frame. Flash accepts only a first frame.',
+    'kling_prompt': 'Enter a Kling prompt. English allows 26,000 characters and other text 11,000 characters; mixed text shares these limits proportionally.',
+    'kling_aspect': 'Kling keyframe generation follows the image framing. Choose Auto for frames, or a supported ratio for text and image references.',
+    'kling_output': 'Choose an output resolution and integer duration supported by the selected Kling model.',
+    'kling_cancel': 'Remote Kling cancellation is not connected. The task may continue running and incur charges.',
     'tool_concept_translation': 'Use a short English subject description, or add a chat model in Models to translate it automatically.',
     'tool_no_video_match': 'The requested subject was not found in the video. Try a different description.',
     'voice_upload_type': 'Upload the voice recording using multipart/form-data.',
