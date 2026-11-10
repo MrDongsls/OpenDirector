@@ -140,7 +140,7 @@ async function proveManualAdd(labels, locale) {
   await page.getByRole("button", { name: labels.cancel, exact: true }).click();
   await page.getByRole("button", { name: labels.add, exact: true }).waitFor();
 }
-async function proveAgentPicker() {
+async function proveAgentPicker(labels) {
   // The picker runtime inventory is a response fixture. The Default group lists the
   // saved agent model configs from the real API, so no provider endpoint is contacted.
   await page.route(/\/assistant\/runtimes$/, route => route.fulfill({
@@ -149,11 +149,12 @@ async function proveAgentPicker() {
       available: true, status: "ready", modelOverride: false,
     }],
   }));
-  await page.getByRole("button", { name: copy["zh-CN"].chatEntry, exact: true }).click();
-  await page.getByRole("button", { name: /^Agent：/ }).click();
+  await page.getByRole("button", { name: labels.chatEntry, exact: true }).click();
+  const agentButton = page.getByRole("button", { name: /^Agent[:：]/ });
+  await agentButton.click();
   await brandLogo(pickerRow.locator("img.cw-model-logo"));
   await pickerRow.click();
-  await page.getByRole("button", { name: /^Agent：/ }).click();
+  await agentButton.click();
   assert.equal(
     await pickerRow.getAttribute("aria-checked"),
     "true", "Saved Zhipu model stays selected in the assistant picker",
@@ -182,7 +183,7 @@ try {
   await proveReopen(zh, "zh-CN");
   await proveManualAdd(zh, "zh-CN");
   await page.getByRole("button", { name: zh.close, exact: true }).click();
-  await proveAgentPicker();
+  await proveAgentPicker(zh);
 
   await page.getByRole("button", { name: zh.settings, exact: true }).click();
   await page.getByRole("button", { name: zh.models, exact: true }).click();
@@ -195,6 +196,8 @@ try {
   await page.getByRole("button", { name: en.cancel, exact: true }).click();
   await proveReopen(en, "en-US");
   await proveManualAdd(en, "en-US");
+  await page.getByRole("button", { name: en.close, exact: true }).click();
+  await proveAgentPicker(en);
   assert.ok(!requests.some(url => new URL(url).hostname === "open.bigmodel.cn"), "Browser must not contact the model provider");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, fixture: true, generation: "not submitted", base, api,
