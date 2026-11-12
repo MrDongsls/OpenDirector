@@ -880,7 +880,12 @@
                   "amount": 1.0
                 }
               }
-            ]
+            ],
+            "asset": null,
+            "role": null,
+            "format": null,
+            "animationNames": [],
+            "hasAnimation": false
           }
         ]
       }
