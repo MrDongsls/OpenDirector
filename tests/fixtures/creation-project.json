@@ -886,6 +886,39 @@
             "format": null,
             "animationNames": [],
             "hasAnimation": false
+          },
+          {
+            "position": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            },
+            "rotation": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            },
+            "scale": {
+              "x": 1.0,
+              "y": 1.0,
+              "z": 1.0
+            },
+            "id": "prop",
+            "kind": "gltf",
+            "name": "Prop",
+            "color": "#b8c5ff",
+            "keyframes": [],
+            "motionClips": [],
+            "asset": {
+              "assetId": "00000000-0000-0000-0000-00000000000e",
+              "revision": 1,
+              "fingerprint": "sha256:000000000000000000000000000000000000000000000000000000000000000e",
+              "kind": "file"
+            },
+            "role": "scene",
+            "format": "glb",
+            "animationNames": [],
+            "hasAnimation": false
           }
         ]
       }

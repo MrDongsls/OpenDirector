@@ -1,6 +1,7 @@
-/** First-phase Director Stage acceptance: create, open, edit, reopen, undo, and redo.
+/** Second-phase Director Stage acceptance: create, import GLB, edit, reopen, undo, and redo.
  * DIRECTOR_STAGE_LOCALE runs the same flow in another UI language (default en-US). */
 import assert from "node:assert/strict";
+import { makeGlb } from "./director_stage_fixture.mjs";
 const { chromium } = await import(
   process.env.PLAYWRIGHT_MODULE ?? "playwright-core"
 );
@@ -19,6 +20,9 @@ const L = {
     undo: "Undo",
     redo: "Redo",
     openStage: "Open Director Stage",
+    importAsset: "Import GLB / GLTF",
+    noAnimationNote:
+      "This character has no animation data; it still follows camera, storyboard, and transform keyframes.",
   },
   "zh-CN": {
     saved: "已保存到本机",
@@ -32,6 +36,8 @@ const L = {
     undo: "撤销",
     redo: "重做",
     openStage: "打开导演台",
+    importAsset: "导入 GLB / GLTF",
+    noAnimationNote: "此人物没有动画数据，但仍会跟随摄像机、分镜和变换关键帧。",
   },
 }[locale];
 assert.ok(L, `Unsupported DIRECTOR_STAGE_LOCALE: ${locale}`);
@@ -98,7 +104,9 @@ const director = (snapshot, itemId) => {
   const item = snapshot.canvasItems.find(
     (candidate) =>
       candidate.id === itemId ||
-      (candidate.visible && candidate.kind === "external"),
+      (itemId === undefined &&
+        candidate.visible &&
+        candidate.kind === "external"),
   );
   const document = item
     ? snapshot.editorDocuments.find(
@@ -147,6 +155,18 @@ try {
   const objectId = createdRefs.document.data.objects[0].id;
   assert.equal(keyframeCount(createdRefs.document), 0);
 
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "acceptance.glb",
+      mimeType: "model/gltf-binary",
+      buffer: makeGlb(),
+    });
+  await page
+    .getByRole("button", { name: "acceptance", exact: true })
+    .waitFor();
+  await page.getByText(L.noAnimationNote, { exact: true }).waitFor();
+
   await page.getByLabel(L.cameraName, { exact: true }).fill("Acceptance camera");
   await page
     .getByRole("slider", { name: L.playhead, exact: true })
@@ -169,6 +189,18 @@ try {
   }, "edited director document with keyframes");
   const committedRefs = director(committed, itemId);
   assert.equal(committedRefs.document.data.objects[0].id, objectId);
+  const imported = committedRefs.document.data.objects.find(
+    (object) => object.kind === "gltf",
+  );
+  assert.ok(imported);
+  assert.equal(imported.role, "character");
+  assert.equal(imported.format, "glb");
+  assert.equal(imported.asset.kind, "file");
+  assert.ok(
+    committed.assets.some((asset) => asset.id === imported.asset.assetId),
+  );
+  const importedObjectId = imported.id;
+  const importedAssetId = imported.asset.assetId;
   assert.ok(
     committedRefs.document.data.objects[0].keyframes.some(
       (frame) => frame.time === 6,
@@ -181,7 +213,8 @@ try {
   );
 
   // Applying saves and closes the stage editor in one step.
-  const undo = page.getByRole("button", { name: L.undo, exact: true });
+  // The toolbar undo carries an aria-label; the stage modal's undo is plain text.
+  const undo = page.getByLabel(L.undo, { exact: true });
   await undo.waitFor();
   assert.equal(await undo.isEnabled(), true);
   await undo.click();
@@ -195,8 +228,14 @@ try {
     );
   }, "undo restores the original director document without changing identity");
   assert.equal(director(undone, itemId).document.data.objects[0].id, objectId);
+  assert.equal(
+    director(undone, itemId).document.data.objects.some(
+      (object) => object.id === importedObjectId,
+    ),
+    false,
+  );
 
-  const redo = page.getByRole("button", { name: L.redo, exact: true });
+  const redo = page.getByLabel(L.redo, { exact: true });
   assert.equal(await redo.isEnabled(), true);
   await redo.click();
   const redone = await until((snapshot) => {
@@ -209,6 +248,10 @@ try {
     );
   }, "redo restores the edited director document without changing identity");
   assert.equal(director(redone, itemId).document.data.objects[0].id, objectId);
+  const redoneImported = director(redone, itemId).document.data.objects.find(
+    (object) => object.id === importedObjectId,
+  );
+  assert.equal(redoneImported.asset.assetId, importedAssetId);
 
   await page.locator(`.react-flow__node[data-id="${itemId}"]`).click();
   await page
@@ -221,6 +264,9 @@ try {
     await page.getByLabel(L.cameraName, { exact: true }).inputValue(),
     "Acceptance camera",
   );
+  await page
+    .getByRole("button", { name: "acceptance", exact: true })
+    .waitFor();
   await page.getByRole("button", { name: "6.00s", exact: true }).waitFor();
   assert.deepEqual(director(await state(), itemId).document, director(redone, itemId).document);
   await page
@@ -241,6 +287,8 @@ try {
         "shared creation toolbar entry",
         "automatic editor opening",
         "external node projects to director document",
+        "GLB import previews before save and registers a file asset",
+        "imported asset identity survives undo, redo, and reopen",
         "keyframes persist and reopen",
         "undo preserves node and document identities",
         "redo restores the edited document and keyframes",

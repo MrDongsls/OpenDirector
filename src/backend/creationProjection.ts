@@ -264,14 +264,29 @@ export class CreationProjection {
           },
         };
       case "director":
+        {
+          const objects = await Promise.all(
+            doc.data.objects.map(async (object) =>
+              object.kind === "gltf" && object.asset
+                ? {
+                    ...object,
+                    source: await this.client
+                      .mediaUrl(object.asset.assetId)
+                      .catch(() => undefined),
+                  }
+                : object,
+            ),
+          );
         return {
           external: { externalType: "director-stage" },
           localStage: parseLocalStageValue({
             format: "opendirector-local-stage",
             version: 2,
             ...doc.data,
+            objects,
           }),
         };
+        }
       case "layers":
         return {
           layers: {
@@ -1051,12 +1066,41 @@ export class CreationProjection {
         };
       }
       case "director": {
+        const stage = parseLocalStageValue(
+          node.data.localStage ?? createLocalStage(),
+        );
+        const objects = await Promise.all(
+          stage.objects.map(async (object) => {
+            const {
+              source: _source,
+              asset: _asset,
+              role: _role,
+              format: _format,
+              animationNames: _animationNames,
+              hasAnimation: _hasAnimation,
+              ...base
+            } = object;
+            if (object.kind !== "gltf") return base;
+            const asset =
+              object.asset ??
+              (object.source
+                ? await this.importResource({
+                    kind: "file",
+                    title: `${object.name}.${object.format}`,
+                    src: object.source,
+                  })
+                : undefined);
+            if (!asset)
+              throw new Error(tNow("errors.backend.directorAssetMissing"));
+            return { ...base, asset, role: object.role, format: object.format, animationNames: object.animationNames, hasAnimation: object.hasAnimation };
+          }),
+        );
         const {
           format: _format,
           version: _version,
           ...data
-        } = node.data.localStage ?? createLocalStage();
-        return { ...common, kind, data };
+        } = stage;
+        return { ...common, kind, data: { ...data, objects } };
       }
       case "image_crop": {
         const crop = node.data.imageCrop!;
