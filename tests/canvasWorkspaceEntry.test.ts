@@ -8,6 +8,7 @@ import {
   undo,
 } from "../src/canvas/history.ts";
 import { createNode } from "../src/canvas/model.ts";
+import { CANVAS_CREATION_TOOLS } from "../src/canvas/creationTools.ts";
 import {
   generationPrepareBlock,
   importedNodeIds,
@@ -19,6 +20,12 @@ import {
 } from "../src/canvas/workspace/state.ts";
 
 setActiveLocale("zh-CN");
+
+test("director stage is enabled in the shared creation entry list", () => {
+  const stage = CANVAS_CREATION_TOOLS.find((tool) => tool.kind === "external");
+  assert.ok(stage);
+  assert.equal(stage.unavailable, undefined);
+});
 
 test("upload picker blocks locked, generation output, and running nodes", () => {
   assert.deepEqual(
