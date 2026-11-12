@@ -1,6 +1,7 @@
 import type { Translate } from "../i18n/I18nProvider.tsx";
 import { defaultTranslate } from "./assistantTranslate.ts";
 import { parseStageMotion, type StageMotion } from "./stageMotion.ts";
+import type { AssetRef } from "../contracts/generated.ts";
 
 /** Local previsualization format. V1 is migrated here, never in consumers. */
 export interface Vector3Value {
@@ -24,13 +25,23 @@ export interface StageMotionClip {
   duration: number;
   motion: StageMotion;
 }
+export type StageAssetRole = "character" | "scene";
+export type StageAssetFormat = "glb" | "gltf";
 export interface StageObject extends StageTransform {
   id: string;
-  kind: "person" | "box" | "sphere";
+  kind: "person" | "box" | "sphere" | "gltf";
   name: string;
   color: string;
   keyframes: StageTransformFrame[];
   motionClips: StageMotionClip[];
+  /** Registered asset identity. Omitted only while a local import is unsaved. */
+  asset?: AssetRef;
+  /** Browser URL used to reconstruct a preview; never sent to the backend. */
+  source?: string;
+  role?: StageAssetRole;
+  format?: StageAssetFormat;
+  animationNames?: string[];
+  hasAnimation?: boolean;
 }
 export interface StageCamera {
   position: Vector3Value;
@@ -72,6 +83,7 @@ export interface StageSample {
   cameraId: string;
   objects: StageSampleObject[];
 }
+export const STAGE_ASSET_MAX_BYTES = 100 * 1024 * 1024;
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number =>
@@ -82,6 +94,15 @@ const nonempty = (v: unknown): v is string =>
   typeof v === "string" && !!v.trim();
 const color = (v: unknown): v is string =>
   typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+const assetRef = (v: unknown): v is AssetRef =>
+  record(v) &&
+  nonempty(v.assetId) &&
+  typeof v.revision === "number" &&
+  Number.isInteger(v.revision) &&
+  v.revision >= 1 &&
+  typeof v.fingerprint === "string" &&
+  /^sha256:[0-9a-f]{64}$/.test(v.fingerprint) &&
+  v.kind === "file";
 const sameVector = (a: Vector3Value, b: Vector3Value) =>
   a.x === b.x && a.y === b.y && a.z === b.z;
 function parseTransform(
@@ -324,19 +345,43 @@ export function parseLocalStageValue(
     ids = new Set<string>(),
     cameraIds = new Set<string>();
   const objects: StageObject[] = v.objects.map((o) => {
+    const rawObject = record(o) ? o : undefined;
+    const imported = rawObject?.kind === "gltf";
+    const importedAsset =
+      imported && assetRef(rawObject?.asset) ? rawObject.asset : undefined;
+    const importedSource =
+      imported && typeof rawObject?.source === "string" && rawObject.source.trim()
+        ? rawObject.source
+        : undefined;
+    const animationNames =
+      imported && Array.isArray(rawObject?.animationNames)
+        ? rawObject.animationNames.filter((name): name is string => nonempty(name))
+        : [];
     if (
       !record(o) ||
       !nonempty(o.id) ||
       ids.has(o.id) ||
-      !["person", "box", "sphere"].includes(String(o.kind)) ||
+      !["person", "box", "sphere", "gltf"].includes(String(o.kind)) ||
       typeof o.name !== "string" ||
       !color(o.color) ||
-      !Array.isArray(o.motionClips)
+      !Array.isArray(o.motionClips) ||
+      (imported &&
+        ((!importedAsset && !importedSource) ||
+          !["character", "scene"].includes(String(rawObject?.role)) ||
+          !["glb", "gltf"].includes(String(rawObject?.format)) ||
+          !Array.isArray(rawObject?.animationNames) ||
+          animationNames.length !== rawObject?.animationNames.length ||
+          typeof rawObject?.hasAnimation !== "boolean" ||
+          rawObject.hasAnimation !== Boolean(animationNames.length)))
     )
       throw new Error(t("editors.stage.error.invalidObject"));
     ids.add(o.id);
-    if (o.kind !== "person" && o.motionClips.length)
+    if (o.kind !== "person" && o.kind !== "gltf" && o.motionClips.length)
       throw new Error(t("editors.stage.error.jointMotionPerson"));
+    if (imported && o.role === "scene" && o.motionClips.length)
+      throw new Error(t("editors.stage.error.importedSceneMotion"));
+    if (imported && !o.hasAnimation && o.motionClips.length)
+      throw new Error(t("editors.stage.error.importedMotionUnavailable"));
     return {
       id: o.id,
       kind: o.kind as StageObject["kind"],
@@ -359,6 +404,16 @@ export function parseLocalStageValue(
         t("editors.stage.label.motionClip"),
         t,
       ),
+      ...(importedAsset ? { asset: { ...importedAsset } } : {}),
+      ...(importedSource ? { source: importedSource } : {}),
+      ...(imported
+        ? {
+            role: o.role as StageAssetRole,
+            format: o.format as StageAssetFormat,
+            animationNames: [...animationNames],
+            hasAnimation: o.hasAnimation as boolean,
+          }
+        : {}),
     };
   });
   const cameras: StageCameraRig[] = v.cameras.map((c) => {
@@ -416,6 +471,14 @@ const sameCamera = (a: StageCamera, b: StageCamera) =>
   sameVector(a.position, b.position) &&
   sameVector(a.target, b.target) &&
   a.fov === b.fov;
+const sameAsset = (a: AssetRef | undefined, b: AssetRef | undefined) =>
+  a === b ||
+  (!!a &&
+    !!b &&
+    a.assetId === b.assetId &&
+    a.revision === b.revision &&
+    a.fingerprint === b.fingerprint &&
+    a.kind === b.kind);
 const sameFrames = <T>(
   a: { id: string; time: number; value: T }[],
   b: { id: string; time: number; value: T }[],
@@ -448,6 +511,12 @@ export function sameLocalStage(
           o.name === p.name &&
           o.kind === p.kind &&
           o.color === p.color &&
+          sameAsset(o.asset, p.asset) &&
+          o.role === p.role &&
+          o.format === p.format &&
+          o.hasAnimation === p.hasAnimation &&
+          (o.animationNames ?? []).join("\u0000") ===
+            (p.animationNames ?? []).join("\u0000") &&
           sameTransform(o, p) &&
           sameFrames(o.keyframes, p.keyframes, sameTransform) &&
           o.motionClips.length === p.motionClips.length &&

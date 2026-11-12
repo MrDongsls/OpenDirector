@@ -2,6 +2,8 @@ import { useEditorCommit, type EditorApplyResult } from "./useEditorCommit";
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { clone as cloneSkinnedObject } from "three/addons/utils/SkeletonUtils.js";
 import type { CanvasNode } from "./model";
 import { ControlSlider } from "./ControlSlider";
 import {
@@ -16,6 +18,7 @@ import {
   stageOutputSize,
   defaultStageCamera,
   STAGE_RATIOS,
+  STAGE_ASSET_MAX_BYTES,
 } from "./stageDocument";
 import type {
   LocalStageDocument,
@@ -26,6 +29,8 @@ import type {
   StageShot,
   StageObject,
   StageTransform,
+  StageAssetFormat,
+  StageAssetRole,
   Vector3Value,
 } from "./stageDocument";
 import {
@@ -36,7 +41,11 @@ import {
 } from "./stageHistory";
 import { EditorModal } from "./EditorModal";
 import "./director-stage.css";
-import { STAGE_MOTIONS, sampleJointPose } from "./stageMotion";
+import {
+  STAGE_MOTIONS,
+  sampleJointPose,
+  type StageMotion,
+} from "./stageMotion";
 import { encodeMp4 } from "./mp4Export";
 import { downloadFile, downloadFilename } from "./assets";
 import { withMediaDuration } from "./editorMedia";
@@ -57,6 +66,16 @@ export interface DirectorStageProps {
     stage: LocalStageDocument,
   ) => Promise<(result: LinkedMediaResult) => Promise<boolean>>;
 }
+interface LoadedStageAsset {
+  scene: THREE.Object3D;
+  animations: THREE.AnimationClip[];
+}
+interface ImportedRuntime {
+  root: THREE.Group;
+  clips: THREE.AnimationClip[];
+  mixer?: THREE.AnimationMixer;
+  activeClip?: THREE.AnimationClip;
+}
 interface StageRuntime {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -64,6 +83,8 @@ interface StageRuntime {
   controls: OrbitControls;
   root: THREE.Group;
   grid: THREE.GridHelper;
+  imported: Map<string, ImportedRuntime>;
+  assetCache: Map<string, LoadedStageAsset>;
 }
 const vector = (value: THREE.Vector3): Vector3Value => ({
   x: value.x,
@@ -75,6 +96,7 @@ const titles: Record<StageObject["kind"], MessageKey> = {
   person: "editors.stage.ui.objectPerson",
   box: "editors.stage.ui.objectBox",
   sphere: "editors.stage.ui.objectSphere",
+  gltf: "editors.stage.ui.objectGltf",
 };
 function applyTransform(object: THREE.Object3D, value: StageTransform) {
   object.position.set(value.position.x, value.position.y, value.position.z);
@@ -84,6 +106,8 @@ function applyTransform(object: THREE.Object3D, value: StageTransform) {
 function buildObject(value: StageObject): THREE.Group {
   const group = new THREE.Group();
   group.userData.objectId = value.id;
+  group.userData.objectKind = value.kind;
+  if (value.kind === "gltf") group.userData.assetSource = value.source;
   const material = new THREE.MeshStandardMaterial({
     color: value.color,
     roughness: 0.58,
@@ -104,7 +128,11 @@ function buildObject(value: StageObject): THREE.Group {
   if (value.kind === "box") add(new THREE.BoxGeometry(1, 1, 1), 0, 0.5, 0);
   else if (value.kind === "sphere")
     add(new THREE.SphereGeometry(0.6, 32, 24), 0, 0.6, 0);
-  else {
+  else if (value.kind === "gltf") {
+    material.transparent = true;
+    material.opacity = 0.35;
+    add(new THREE.BoxGeometry(1, 1, 1), 0, 0.5, 0);
+  } else {
     const bone = (
       parent: THREE.Object3D,
       name: string,
@@ -148,6 +176,83 @@ function buildObject(value: StageObject): THREE.Group {
   }
   applyTransform(group, value);
   return group;
+}
+function cloneImportedAsset(
+  value: StageObject,
+  loaded: LoadedStageAsset,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.userData.objectId = value.id;
+  group.userData.objectKind = value.kind;
+  group.userData.assetSource = value.source;
+  group.add(cloneSkinnedObject(loaded.scene));
+  applyTransform(group, value);
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  return group;
+}
+async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
+  const loaded = await new GLTFLoader().loadAsync(source);
+  return { scene: loaded.scene, animations: loaded.animations };
+}
+const animationHints: Record<StageMotion["preset"], string[]> = {
+  idle: ["idle", "rest", "stand", "default"],
+  walk: ["walk", "walking"],
+  run: ["run", "running"],
+  wave: ["wave", "waving"],
+};
+function animationFor(
+  clips: readonly THREE.AnimationClip[],
+  motion: StageMotion["preset"],
+) {
+  const hints = animationHints[motion];
+  return (
+    clips.find((clip) =>
+      hints.some((hint) => clip.name.toLowerCase().includes(hint)),
+    ) ?? clips[0]
+  );
+}
+function applyImportedAnimation(
+  imported: Map<string, ImportedRuntime>,
+  value: StageSampleObject,
+) {
+  if (value.kind !== "gltf") return;
+  const binding = imported.get(value.id);
+  if (!binding?.mixer) return;
+  const clip = value.motion
+    ? animationFor(binding.clips, value.motion.preset)
+    : undefined;
+  if (binding.activeClip !== clip) {
+    binding.mixer.stopAllAction();
+    if (clip) binding.mixer.clipAction(clip).reset().play();
+    binding.activeClip = clip;
+  }
+  binding.mixer.setTime(
+    clip && value.motion ? value.motionTime * value.motion.speed : 0,
+  );
+}
+function hasExternalGltfResources(value: unknown) {
+  if (!value || typeof value !== "object") return true;
+  const document = value as {
+    buffers?: unknown;
+    images?: unknown;
+  };
+  return [document.buffers, document.images].some(
+    (resources) =>
+      Array.isArray(resources) &&
+      resources.some(
+        (resource) =>
+          resource &&
+          typeof resource === "object" &&
+          "uri" in resource &&
+          typeof resource.uri === "string" &&
+          !resource.uri.startsWith("data:"),
+      ),
+  );
 }
 function poseJoints(group: THREE.Object3D, value: StageSampleObject) {
   if (value.kind !== "person") return;
@@ -203,6 +308,7 @@ function displayPose(runtime: StageRuntime, pose: StageSample) {
     if (data) {
       applyTransform(child, data);
       poseJoints(child, data);
+      applyImportedAnimation(runtime.imported, data);
     }
   }
 }
@@ -287,6 +393,8 @@ export function DirectorStage({
     [ready, setReady] = useState(false);
   const [inserted, setInserted] = useState(false);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
+  const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
+  const [assetNotice, setAssetNotice] = useState("");
   const renderPublisher = useRef<
     ((result: LinkedMediaResult) => boolean | Promise<boolean>) | null
   >(null);
@@ -298,6 +406,8 @@ export function DirectorStage({
     timeRef = useRef(time),
     playingRef = useRef(playing),
     importInput = useRef<HTMLInputElement>(null),
+    assetInput = useRef<HTMLInputElement>(null),
+    ownedAssetUrls = useRef(new Set<string>()),
     active = useRef(true);
   stageRef.current = stage;
   timeRef.current = time;
@@ -317,6 +427,7 @@ export function DirectorStage({
     setRendered(null);
     setInserted(false);
     setError("");
+    setAssetNotice("");
   };
   const edit = (
     operation: (value: LocalStageDocument) => LocalStageDocument,
@@ -361,7 +472,16 @@ export function DirectorStage({
       });
   };
   const addMotionClip = () => {
-    if (!object) return;
+    if (
+      !object ||
+      (object.kind !== "person" &&
+        !(
+          object.kind === "gltf" &&
+          object.role === "character" &&
+          object.hasAnimation
+        ))
+    )
+      return;
     const start = timeRef.current;
     const next =
       object.motionClips.find((clip) => clip.start > start)?.start ??
@@ -512,7 +632,16 @@ export function DirectorStage({
     const fill = new THREE.DirectionalLight(0x8d88ff, 1.8);
     fill.position.set(-6, 5, -5);
     scene.add(fill);
-    const current = { renderer, scene, camera, controls, root, grid };
+    const current: StageRuntime = {
+      renderer,
+      scene,
+      camera,
+      controls,
+      root,
+      grid,
+      imported: new Map(),
+      assetCache: new Map(),
+    };
     runtime.current = current;
     setCamera(current, sampleStage(stageRef.current, timeRef.current).camera);
     const resize = () => {
@@ -614,6 +743,10 @@ export function DirectorStage({
       renderer.domElement.removeEventListener("pointerup", pointerUp);
       renderer.domElement.removeEventListener("webglcontextlost", contextLost);
       disposeObject(scene);
+      for (const loaded of runtime.current?.assetCache.values() ?? [])
+        disposeObject(loaded.scene);
+      for (const url of ownedAssetUrls.current) URL.revokeObjectURL(url);
+      ownedAssetUrls.current.clear();
       light.shadow.dispose();
       renderer.dispose();
       renderer.domElement.remove();
@@ -624,12 +757,93 @@ export function DirectorStage({
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
+    const objects = new Map(stage.objects.map((item) => [item.id, item]));
     for (const child of [...current.root.children]) {
-      current.root.remove(child);
-      disposeObject(child);
+      const item = objects.get(child.userData.objectId as string);
+      const sourceChanged =
+        item?.kind === "gltf" &&
+        child.userData.assetSource !== item.source;
+      if (!item || child.userData.objectKind !== item.kind || sourceChanged) {
+        current.root.remove(child);
+        if (child.userData.objectKind !== "gltf") disposeObject(child);
+        current.imported.delete(child.userData.objectId as string);
+      }
     }
-    stage.objects.forEach((item) => current.root.add(buildObject(item)));
+    for (const item of stage.objects) {
+      const existing = current.root.children.find(
+        (child) => child.userData.objectId === item.id,
+      );
+      if (!existing) current.root.add(buildObject(item));
+      else if (item.kind !== "gltf")
+        existing.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const materials = Array.isArray(child.material)
+              ? child.material
+              : [child.material];
+            materials.forEach((material) => {
+              if (material instanceof THREE.MeshStandardMaterial)
+                material.color.set(item.color);
+            });
+          }
+        });
+    }
   }, [stage.objects, ready]);
+  useEffect(() => {
+    const current = runtime.current;
+    if (!current || !ready) return;
+    let cancelled = false;
+    const load = async () => {
+      for (const item of stage.objects) {
+        if (item.kind !== "gltf") continue;
+        if (!item.source) {
+          if (item.asset) setError(t("editors.stage.ui.assetUnavailable"));
+          continue;
+        }
+        const existing = current.root.children.find(
+          (child) => child.userData.objectId === item.id,
+        );
+        if (
+          existing?.userData.assetSource === item.source &&
+          current.imported.has(item.id)
+        )
+          continue;
+        try {
+          const cacheKey = item.asset?.assetId ?? item.source;
+          let loaded = current.assetCache.get(cacheKey);
+          if (!loaded) {
+            loaded = await loadStageAsset(item.source);
+            current.assetCache.set(cacheKey, loaded);
+          }
+          if (cancelled || !active.current) return;
+          const previous = current.root.children.find(
+            (child) => child.userData.objectId === item.id,
+          );
+          if (previous) current.root.remove(previous);
+          const group = cloneImportedAsset(item, loaded);
+          current.root.add(group);
+          current.imported.set(item.id, {
+            root: group,
+            clips: loaded.animations,
+            mixer: loaded.animations.length
+              ? new THREE.AnimationMixer(group)
+              : undefined,
+          });
+          if (item.role === "character" && !loaded.animations.length)
+            setAssetNotice(t("editors.stage.ui.assetNotice"));
+          displayPose(current, sampleStage(stageRef.current, timeRef.current));
+        } catch {
+          if (!cancelled && active.current)
+            setError(
+              t("editors.stage.ui.assetLoadFailed", { name: item.name }),
+            );
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [stage.objects, ready, t]);
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
@@ -770,9 +984,79 @@ export function DirectorStage({
         );
     }
   };
+  const importAsset = async (file: File) => {
+    const lowerName = file.name.toLowerCase();
+    const format: StageAssetFormat | undefined = lowerName.endsWith(".glb")
+      ? "glb"
+      : lowerName.endsWith(".gltf")
+        ? "gltf"
+        : undefined;
+    let source: string | undefined;
+    try {
+      if (!format) throw new Error(t("editors.stage.ui.assetUnsupported"));
+      if (file.size > STAGE_ASSET_MAX_BYTES)
+        throw new Error(
+          t("editors.stage.ui.assetTooLarge", {
+            name: file.name,
+            size: STAGE_ASSET_MAX_BYTES / 1024 / 1024,
+          }),
+        );
+      if (format === "gltf" && hasExternalGltfResources(JSON.parse(await file.text())))
+        throw new Error(t("editors.stage.ui.assetUnsupported"));
+      source = URL.createObjectURL(file);
+      ownedAssetUrls.current.add(source);
+      const loaded = await loadStageAsset(source);
+      const id = crypto.randomUUID();
+      const name = file.name.replace(/\.(?:glb|gltf)$/i, "") || file.name;
+      edit((current) => ({
+        ...current,
+        objects: [
+          ...current.objects,
+          {
+            id,
+            kind: "gltf",
+            name,
+            color: "#b8c5ff",
+            role: assetRole,
+            format,
+            source,
+            animationNames: loaded.animations.map(
+              (clip, index) => clip.name.trim() || `clip-${index + 1}`,
+            ),
+            hasAnimation: loaded.animations.length > 0,
+            position: { x: current.objects.length * 1.3, y: 0, z: 0 },
+            rotation: { x: 0, y: 0, z: 0 },
+            scale: { x: 1, y: 1, z: 1 },
+            keyframes: [],
+            motionClips: [],
+          },
+        ],
+      }));
+      setSelected(id);
+      setAssetNotice(
+        loaded.animations.length
+          ? t("editors.stage.ui.assetImported", {
+              name,
+              animationCount: loaded.animations.length,
+            })
+          : t("editors.stage.ui.assetImportedStatic", { name }),
+      );
+    } catch (reason) {
+      if (source) {
+        URL.revokeObjectURL(source);
+        ownedAssetUrls.current.delete(source);
+      }
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : t("editors.stage.ui.assetLoadFailed", { name: file.name }),
+      );
+    }
+  };
 
   const renderVideo = async () => {
     if (!runtime.current) return;
+    const previewRuntime = runtime.current;
     const controller = new AbortController();
     exporting.current?.abort();
     exporting.current = controller;
@@ -782,8 +1066,30 @@ export function DirectorStage({
     setRendered(null);
     setInserted(false);
     setRenderProgress(0);
-    const scene = runtime.current.scene.clone(true);
+    const scene = previewRuntime.scene.clone(true);
     const root = scene.getObjectByName("stage-objects")!;
+    const renderImported = new Map<string, ImportedRuntime>();
+    for (const [id, binding] of previewRuntime.imported) {
+      const item = snapshot.objects.find((object) => object.id === id);
+      const cloned = root.children.find(
+        (child) => child.userData.objectId === id,
+      );
+      const source = binding.root.children[0];
+      if (!item || !cloned || !source) continue;
+      const replacement = cloneImportedAsset(item, {
+        scene: source,
+        animations: binding.clips,
+      });
+      root.remove(cloned);
+      root.add(replacement);
+      renderImported.set(id, {
+        root: replacement,
+        clips: binding.clips,
+        mixer: binding.clips.length
+          ? new THREE.AnimationMixer(replacement)
+          : undefined,
+      });
+    }
     const materials = new Map<THREE.Material, THREE.Material>();
     scene.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
@@ -845,6 +1151,7 @@ export function DirectorStage({
             if (object) {
               applyTransform(child, object);
               poseJoints(child, object);
+              applyImportedAnimation(renderImported, object);
             }
           }
           renderer!.render(scene, camera);
@@ -947,7 +1254,16 @@ export function DirectorStage({
           <button
             onClick={() =>
               download(
-                JSON.stringify(stageRef.current, null, 2),
+                JSON.stringify(
+                  {
+                    ...stageRef.current,
+                    objects: stageRef.current.objects.map(
+                      ({ source: _source, ...object }) => object,
+                    ),
+                  },
+                  null,
+                  2,
+                ),
                 `${node.data.title || "director-stage"}.stage.json`,
                 "application/json",
               )
@@ -1020,10 +1336,34 @@ export function DirectorStage({
               <div className="cw-stage-add">
                 {(["person", "box", "sphere"] as const).map((kind) => (
                   <button key={kind} onClick={() => addObject(kind)}>
-                    + {titles[kind]}
+                    + {t(titles[kind])}
                   </button>
                 ))}
               </div>
+              <label className="cw-domain-field">
+                {t("editors.stage.ui.assetRole")}
+                <select
+                  value={assetRole}
+                  onChange={(event) =>
+                    setAssetRole(event.target.value as StageAssetRole)
+                  }
+                >
+                  <option value="character">
+                    {t("editors.stage.ui.assetCharacter")}
+                  </option>
+                  <option value="scene">
+                    {t("editors.stage.ui.assetScene")}
+                  </option>
+                </select>
+              </label>
+              <button onClick={() => assetInput.current?.click()}>
+                + {t("editors.stage.ui.importAsset")}
+              </button>
+              {assetNotice && (
+                <p className="cw-domain-note" role="status">
+                  {assetNotice}
+                </p>
+              )}
               <div className="cw-stage-object-list">
                 {stage.objects.map((item) => (
                   <button
@@ -1276,7 +1616,26 @@ export function DirectorStage({
                       }
                     />
                   </label>
-                  {object.kind === "person" && (
+                  {object.kind === "gltf" && (
+                    <p className="cw-domain-note" role="status">
+                      {object.role === "character"
+                        ? t("editors.stage.ui.assetCharacter")
+                        : t("editors.stage.ui.assetScene")}
+                      {" · "}
+                      {object.hasAnimation
+                        ? t("editors.stage.ui.assetImported", {
+                            name: object.name,
+                            animationCount: object.animationNames?.length ?? 0,
+                          })
+                        : t("editors.stage.ui.assetImportedStatic", {
+                            name: object.name,
+                          })}
+                    </p>
+                  )}
+                  {(object.kind === "person" ||
+                    (object.kind === "gltf" &&
+                      object.role === "character" &&
+                      object.hasAnimation)) && (
                     <section className="cw-stage-clips">
                       <h3>{t("editors.stage.ui.motionClips")}</h3>
                       <button onClick={addMotionClip}>
@@ -1604,6 +1963,18 @@ export function DirectorStage({
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void importStage(file);
+              event.target.value = "";
+            }}
+          />
+          <input
+            className="cw-domain-file-input"
+            ref={assetInput}
+            type="file"
+            accept=".glb,.gltf,model/gltf-binary,model/gltf+json"
+            aria-label={t("editors.stage.ui.importAsset")}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void importAsset(file);
               event.target.value = "";
             }}
           />
