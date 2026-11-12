@@ -1184,11 +1184,16 @@ export interface StageMotionInput extends ContractInput {
 
 export interface StageObjectInput extends StageTransformInput {
   readonly id: string;
-  readonly kind: "person" | "box" | "sphere";
+  readonly kind: "person" | "box" | "sphere" | "gltf";
   readonly name: string;
   readonly color: string;
   readonly keyframes?: ReadonlyArray<TransformFrameInput>;
   readonly motionClips?: ReadonlyArray<MotionClipInput>;
+  readonly asset?: AssetRefInput | null;
+  readonly role?: "character" | "scene" | null;
+  readonly format?: "glb" | "gltf" | null;
+  readonly animationNames?: ReadonlyArray<string>;
+  readonly hasAnimation?: boolean;
 }
 
 export interface StageShotInput extends ContractInput {
@@ -2635,11 +2640,16 @@ export interface StageMotion extends Contract {
 
 export interface StageObject extends StageTransform {
   readonly id: string;
-  readonly kind: "person" | "box" | "sphere";
+  readonly kind: "person" | "box" | "sphere" | "gltf";
   readonly name: string;
   readonly color: string;
   readonly keyframes: ReadonlyArray<TransformFrame>;
   readonly motionClips: ReadonlyArray<MotionClip>;
+  readonly asset: AssetRef | null;
+  readonly role: "character" | "scene" | null;
+  readonly format: "glb" | "gltf" | null;
+  readonly animationNames: ReadonlyArray<string>;
+  readonly hasAnimation: boolean;
 }
 
 export interface StageShot extends Contract {
