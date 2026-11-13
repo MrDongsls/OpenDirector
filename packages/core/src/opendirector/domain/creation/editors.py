@@ -287,20 +287,32 @@ class StageObject(StageTransform):
     def imported_asset(self):
         imported_fields = (self.asset, self.role, self.format)
         if self.animationNames and any(not name.strip() for name in self.animationNames):
-            raise ValueError('Imported animation names cannot be blank')
+            raise ValueError('Imported animation names cannot be blank. 导入的动画名称不能为空。')
         if self.kind == 'gltf':
             if self.asset is None or self.role is None or self.format is None:
-                raise ValueError('Imported stage objects require a registered asset, role and format')
+                raise ValueError(
+                    'Imported stage objects require a registered asset, role and format. '
+                    '导入的舞台对象需要已注册的素材、角色和格式。'
+                )
             if self.asset.kind != 'file':
-                raise ValueError('Imported stage assets must be file assets')
+                raise ValueError('Imported stage assets must be file assets. 导入的舞台素材必须是文件素材。')
             if self.role == 'scene' and self.motionClips:
-                raise ValueError('Scene assets cannot have character motion clips')
+                raise ValueError('Scene assets cannot have character motion clips. 场景素材不能携带角色动作片段。')
             if not self.hasAnimation and self.motionClips:
-                raise ValueError('Imported characters without animation cannot have motion clips')
+                raise ValueError(
+                    'Imported characters without animation cannot have motion clips. '
+                    '没有动画数据的导入人物不能携带动作片段。'
+                )
             if self.hasAnimation != bool(self.animationNames):
-                raise ValueError('Imported animation metadata must match animation names')
+                raise ValueError(
+                    'Imported animation metadata must match animation names. '
+                    '导入的动画信息必须与动画名称一致。'
+                )
         elif any(value is not None for value in imported_fields) or self.animationNames or self.hasAnimation:
-            raise ValueError('Procedural stage objects cannot carry imported asset metadata')
+            raise ValueError(
+                'Procedural stage objects cannot carry imported asset metadata. '
+                '非导入的舞台对象不能携带导入素材信息。'
+            )
         return self
 
 
