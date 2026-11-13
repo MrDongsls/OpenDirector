@@ -1117,7 +1117,7 @@ export function DirectorStage({
     const controller = new AbortController();
     exporting.current?.abort();
     exporting.current = controller;
-    const snapshot = parseLocalStageValue(stageRef.current, t);
+    const exportStage = parseLocalStageValue(stageRef.current, t);
     setPlaying(false);
     setError("");
     setRendered(null);
@@ -1127,7 +1127,7 @@ export function DirectorStage({
     const root = scene.getObjectByName("stage-objects")!;
     const renderImported = new Map<string, ImportedRuntime>();
     for (const [id, binding] of previewRuntime.imported) {
-      const item = snapshot.objects.find((object) => object.id === id);
+      const item = exportStage.objects.find((object) => object.id === id);
       const cloned = root.children.find(
         (child) => child.userData.objectId === id,
       );
@@ -1167,11 +1167,11 @@ export function DirectorStage({
     let renderer: THREE.WebGLRenderer | undefined;
     try {
       renderPublisher.current = onPrepareRender
-        ? await onPrepareRender(snapshot)
+        ? await onPrepareRender(exportStage)
         : onRender;
       controller.signal.throwIfAborted();
       renderer = new THREE.WebGLRenderer({ antialias: true });
-      const size = stageOutputSize(snapshot.aspectRatio);
+      const size = stageOutputSize(exportStage.aspectRatio);
       renderer.setSize(size.width, size.height);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.shadowMap.enabled = true;
@@ -1183,12 +1183,12 @@ export function DirectorStage({
       );
       const blob = await encodeMp4({
         canvas: renderer.domElement,
-        duration: snapshot.duration,
+        duration: exportStage.duration,
         fps: 30,
         signal: controller.signal,
         progress: setRenderProgress,
         draw: (at) => {
-          const pose = sampleStage(snapshot, at);
+          const pose = sampleStage(exportStage, at);
           camera.position.set(
             pose.camera.position.x,
             pose.camera.position.y,
