@@ -306,6 +306,8 @@ export const editors = {
     "The imported asset is unavailable. Reopen the project or import it again.",
   "editors.stage.ui.assetLoadFailed":
     "Could not load “{name}”. The file may be corrupt or reference external resources.",
+  "editors.stage.ui.assetCorrupt":
+    "Could not read “{name}”: the GLB header is valid but the embedded JSON is missing or corrupt.",
   "editors.stage.ui.assetTooLarge":
     "“{name}” is larger than {size} MB. Use a smaller GLB or GLTF file.",
   "editors.stage.ui.assetUnsupported":
