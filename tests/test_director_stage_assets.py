@@ -68,6 +68,8 @@ def test_imported_stage_object_requires_and_round_trips_file_identity():
     [
         {'asset': None},
         {'asset': asset('image')},
+        {'kind': 'person', 'asset': asset(), 'role': 'character', 'format': 'glb'},
+        {'kind': 'sphere', 'animationNames': ('Walk',), 'hasAnimation': True},
         {'role': None},
         {'format': None},
         {'hasAnimation': False},

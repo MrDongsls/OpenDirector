@@ -82,7 +82,7 @@ class ProjectSnapshot(Contract):
         for ref in asset_references(objects):
             asset = assets.get(ref.assetId)
             if asset is None or ref.revision > asset.revision or ref.fingerprint != asset.fingerprint or ref.kind != asset.kind:
-                raise ValueError('Missing or inconsistent pinned asset reference')
+                raise ValueError('Missing or inconsistent pinned asset reference. 缺失或不一致的固定素材引用。')
         parents = {}
         for item in self.canvasItems:
             if item.parentId:
