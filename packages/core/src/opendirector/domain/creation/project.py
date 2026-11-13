@@ -220,6 +220,8 @@ class ProjectSnapshot(Contract):
                         names = asset.metadata.animationNames or ()
                         if tuple(obj.animationNames) != names or obj.hasAnimation != bool(names):
                             raise ValueError('Imported animation metadata must match the pinned asset bytes. 导入的动画信息必须与固定素材的实际字节一致。')
+                if doc.data.still is not None and assets[doc.data.still.assetId].kind != 'image':
+                    raise ValueError('Captured stage stills must pin image assets. 舞台定格必须固定为图片素材。')
         return self
 
 

@@ -428,6 +428,7 @@ export interface DirectorDataInput extends ContractInput {
   readonly cameraSource?: "camera" | "storyboard";
   readonly shots?: ReadonlyArray<StageShotInput>;
   readonly objects?: ReadonlyArray<StageObjectInput>;
+  readonly still?: AssetRefInput | null;
 }
 
 export interface DirectorDocumentInput extends EditorDocumentBaseInput {
@@ -1887,6 +1888,7 @@ export interface DirectorData extends Contract {
   readonly cameraSource: "camera" | "storyboard";
   readonly shots: ReadonlyArray<StageShot>;
   readonly objects: ReadonlyArray<StageObject>;
+  readonly still: AssetRef | null;
 }
 
 export interface DirectorDocument extends EditorDocumentBase {

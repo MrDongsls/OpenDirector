@@ -374,6 +374,7 @@ class DirectorData(Contract):
     cameraSource: Literal['camera', 'storyboard'] = Field(default='camera', description='Camera selection strategy.')
     shots: tuple[StageShot, ...] = Field(default=(), description='Ordered camera shot intervals.')
     objects: tuple[StageObject, ...] = Field(default=(), description='Editable stage objects.')
+    still: AssetRef | None = Field(default=None, description='Captured still frame pinned as a project image asset.')
 
     @model_validator(mode='after')
     def stage_relations(self):

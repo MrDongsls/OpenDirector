@@ -4157,6 +4157,18 @@
             },
             "title": "Objects",
             "type": "array"
+          },
+          "still": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Captured still frame pinned as a project image asset."
           }
         },
         "required": [
@@ -18518,6 +18530,18 @@
             },
             "title": "Objects",
             "type": "array"
+          },
+          "still": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Captured still frame pinned as a project image asset."
           }
         },
         "required": [
@@ -18529,7 +18553,8 @@
           "activeCameraId",
           "cameraSource",
           "shots",
-          "objects"
+          "objects",
+          "still"
         ],
         "title": "DirectorData",
         "type": "object"
