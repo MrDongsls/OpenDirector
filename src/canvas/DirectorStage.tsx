@@ -92,7 +92,9 @@ interface StageRuntime {
   root: THREE.Group;
   grid: THREE.GridHelper;
   imported: Map<string, ImportedRuntime>;
-  assetCache: Map<string, LoadedStageAsset>;
+  /** In-flight or resolved loads keyed by pinned asset id or source URL, so
+   * concurrent effect runs share one load and one set of GPU resources. */
+  assetCache: Map<string, Promise<LoadedStageAsset>>;
 }
 const vector = (value: THREE.Vector3): Vector3Value => ({
   x: value.x,
@@ -744,8 +746,11 @@ export function DirectorStage({
       renderer.domElement.removeEventListener("pointerup", pointerUp);
       renderer.domElement.removeEventListener("webglcontextlost", contextLost);
       disposeObject(scene);
-      for (const loaded of runtime.current?.assetCache.values() ?? [])
-        disposeObject(loaded.scene);
+      for (const pending of runtime.current?.assetCache.values() ?? [])
+        void pending.then(
+          (loaded) => disposeObject(loaded.scene),
+          () => undefined,
+        );
       for (const url of ownedAssetUrls.current) URL.revokeObjectURL(url);
       ownedAssetUrls.current.clear();
       light.shadow.dispose();
@@ -810,11 +815,18 @@ export function DirectorStage({
           continue;
         try {
           const cacheKey = item.asset?.assetId ?? item.source;
-          let loaded = current.assetCache.get(cacheKey);
-          if (!loaded) {
-            loaded = await loadStageAsset(item.source);
-            current.assetCache.set(cacheKey, loaded);
+          let pending = current.assetCache.get(cacheKey);
+          if (!pending) {
+            pending = loadStageAsset(item.source);
+            current.assetCache.set(cacheKey, pending);
+            // A failed load must not poison the cache; evict it so a later
+            // effect run can retry.
+            pending.catch(() => {
+              if (current.assetCache.get(cacheKey) === pending)
+                current.assetCache.delete(cacheKey);
+            });
           }
+          const loaded = await pending;
           if (cancelled || !active.current) return;
           const previous = current.root.children.find(
             (child) => child.userData.objectId === item.id,
@@ -1085,10 +1097,12 @@ export function DirectorStage({
       );
       // Clone from the pristine cached scene, not the posed runtime clone,
       // so frames outside motion clips render the authored rest pose.
+      const cached = previewRuntime.assetCache.get(
+        item?.asset?.assetId ?? item?.source ?? "",
+      );
       const source =
-        previewRuntime.assetCache.get(
-          item?.asset?.assetId ?? item?.source ?? "",
-        )?.scene ?? binding.root.children[0];
+        (cached ? await cached.catch(() => undefined) : undefined)?.scene ??
+        binding.root.children[0];
       if (!item || !cloned || !source) continue;
       const replacement = cloneImportedAsset(item, {
         scene: source,
