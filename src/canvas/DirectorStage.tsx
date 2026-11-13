@@ -71,11 +71,18 @@ interface LoadedStageAsset {
   scene: THREE.Object3D;
   animations: THREE.AnimationClip[];
 }
+interface RestPose {
+  object: THREE.Object3D;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  scale: THREE.Vector3;
+}
 interface ImportedRuntime {
   root: THREE.Group;
   clips: THREE.AnimationClip[];
   mixer?: THREE.AnimationMixer;
   activeClip?: THREE.AnimationClip;
+  restPose: RestPose[];
 }
 interface StageRuntime {
   renderer: THREE.WebGLRenderer;
@@ -200,6 +207,27 @@ async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
   const loaded = await new GLTFLoader().loadAsync(source);
   return { scene: loaded.scene, animations: loaded.animations };
 }
+function createImportedRuntime(
+  group: THREE.Group,
+  clips: THREE.AnimationClip[],
+): ImportedRuntime {
+  const restPose: RestPose[] = [];
+  for (const child of group.children)
+    child.traverse((object) => {
+      restPose.push({
+        object,
+        position: object.position.clone(),
+        quaternion: object.quaternion.clone(),
+        scale: object.scale.clone(),
+      });
+    });
+  return {
+    root: group,
+    clips,
+    mixer: clips.length ? new THREE.AnimationMixer(group) : undefined,
+    restPose,
+  };
+}
 function applyImportedAnimation(
   imported: Map<string, ImportedRuntime>,
   value: StageSampleObject,
@@ -213,6 +241,14 @@ function applyImportedAnimation(
   if (binding.activeClip !== clip) {
     binding.mixer.stopAllAction();
     if (clip) binding.mixer.clipAction(clip).reset().play();
+    // Leaving a clip must return the skeleton to its authored rest pose;
+    // stopAllAction alone leaves bones at the last sampled pose.
+    else
+      for (const part of binding.restPose) {
+        part.object.position.copy(part.position);
+        part.object.quaternion.copy(part.quaternion);
+        part.object.scale.copy(part.scale);
+      }
     binding.activeClip = clip;
   }
   binding.mixer.setTime(
@@ -869,13 +905,10 @@ export function DirectorStage({
           if (previous) current.root.remove(previous);
           const group = cloneImportedAsset(item, loaded);
           current.root.add(group);
-          current.imported.set(item.id, {
-            root: group,
-            clips: loaded.animations,
-            mixer: loaded.animations.length
-              ? new THREE.AnimationMixer(group)
-              : undefined,
-          });
+          current.imported.set(
+            item.id,
+            createImportedRuntime(group, loaded.animations),
+          );
           if (item.role === "character" && !loaded.animations.length)
             setAssetNotice(t("editors.stage.ui.assetNotice"));
           displayPose(current, sampleStage(stageRef.current, timeRef.current));
@@ -1131,7 +1164,12 @@ export function DirectorStage({
       const cloned = root.children.find(
         (child) => child.userData.objectId === id,
       );
-      const source = binding.root.children[0];
+      // Clone from the pristine cached scene, not the posed runtime clone,
+      // so frames outside motion clips render the authored rest pose.
+      const source =
+        previewRuntime.assetCache.get(
+          item?.asset?.assetId ?? item?.source ?? "",
+        )?.scene ?? binding.root.children[0];
       if (!item || !cloned || !source) continue;
       const replacement = cloneImportedAsset(item, {
         scene: source,
@@ -1139,13 +1177,7 @@ export function DirectorStage({
       });
       root.remove(cloned);
       root.add(replacement);
-      renderImported.set(id, {
-        root: replacement,
-        clips: binding.clips,
-        mixer: binding.clips.length
-          ? new THREE.AnimationMixer(replacement)
-          : undefined,
-      });
+      renderImported.set(id, createImportedRuntime(replacement, binding.clips));
     }
     const materials = new Map<THREE.Material, THREE.Material>();
     scene.traverse((child) => {
