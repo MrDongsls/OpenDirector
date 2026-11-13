@@ -124,7 +124,12 @@ function buildObject(value: StageObject): THREE.Group {
   const group = new THREE.Group();
   group.userData.objectId = value.id;
   group.userData.objectKind = value.kind;
-  if (value.kind === "gltf") group.userData.assetSource = value.source;
+  if (value.kind === "gltf") {
+    group.userData.assetSource = value.source;
+    // The translucent box owns exclusive GPU resources, unlike loaded
+    // clones that share them with the cached scene.
+    group.userData.placeholder = true;
+  }
   const material = new THREE.MeshStandardMaterial({
     color: value.color,
     roughness: 0.58,
@@ -861,7 +866,10 @@ export function DirectorStage({
         child.userData.assetSource !== item.source;
       if (!item || child.userData.objectKind !== item.kind || sourceChanged) {
         current.root.remove(child);
-        if (child.userData.objectKind !== "gltf") disposeObject(child);
+        // Loaded imported clones share GPU resources with the cached scene;
+        // placeholders own theirs and must be disposed.
+        if (child.userData.objectKind !== "gltf" || child.userData.placeholder)
+          disposeObject(child);
         current.imported.delete(child.userData.objectId as string);
       }
     }
@@ -940,7 +948,10 @@ export function DirectorStage({
           const previous = current.root.children.find(
             (child) => child.userData.objectId === item.id,
           );
-          if (previous) current.root.remove(previous);
+          if (previous) {
+            current.root.remove(previous);
+            if (previous.userData.placeholder) disposeObject(previous);
+          }
           const group = cloneImportedAsset(item, loaded);
           group.userData.assetCacheKey = cacheKey;
           current.root.add(group);
@@ -1057,7 +1068,13 @@ export function DirectorStage({
     if (!current) throw new Error(t("editors.stage.ui.rendererNotReady"));
     const size = stageOutputSize(stageRef.current.aspectRatio);
     const dom = current.renderer.domElement;
-    const [width, height, aspect] = [dom.width, dom.height, current.camera.aspect];
+    // setSize() takes CSS units while the drawing buffer multiplies by the
+    // pixel ratio; save CSS units and pin the ratio to 1 so the still is
+    // captured at exactly the encoder resolution on high-DPI displays.
+    const previous = current.renderer.getSize(new THREE.Vector2());
+    const ratio = current.renderer.getPixelRatio();
+    const aspect = current.camera.aspect;
+    current.renderer.setPixelRatio(1);
     current.renderer.setSize(size.width, size.height, false);
     current.camera.aspect = size.width / size.height;
     current.camera.updateProjectionMatrix();
@@ -1066,7 +1083,8 @@ export function DirectorStage({
       current.renderer.render(current.scene, current.camera);
       return dom.toDataURL("image/png");
     } finally {
-      current.renderer.setSize(width, height, false);
+      current.renderer.setPixelRatio(ratio);
+      current.renderer.setSize(previous.x, previous.y, false);
       current.camera.aspect = aspect;
       current.camera.updateProjectionMatrix();
       current.renderer.render(current.scene, current.camera);
@@ -1149,7 +1167,18 @@ export function DirectorStage({
       ownedAssetUrls.current.add(url);
       let loaded: LoadedStageAsset;
       try {
-        loaded = await loadStageAsset(source);
+        // Seed the shared cache so the effect run that follows this edit
+        // reuses this load instead of parsing the same blob twice.
+        const current = runtime.current;
+        const pending = loadStageAsset(url);
+        if (current) {
+          current.assetCache.set(url, pending);
+          pending.catch(() => {
+            if (current.assetCache.get(url) === pending)
+              current.assetCache.delete(url);
+          });
+        }
+        loaded = await pending;
       } catch (reason) {
         console.debug("stage asset import failed", reason);
         throw new Error(
@@ -1217,54 +1246,57 @@ export function DirectorStage({
     setRendered(null);
     setInserted(false);
     setRenderProgress(0);
-    const scene = previewRuntime.scene.clone(true);
-    const root = scene.getObjectByName("stage-objects")!;
-    const renderImported = new Map<string, ImportedRuntime>();
-    for (const [id, binding] of previewRuntime.imported) {
-      const item = exportStage.objects.find((object) => object.id === id);
-      const cloned = root.children.find(
-        (child) => child.userData.objectId === id,
-      );
-      // Clone from the pristine cached scene, not the posed runtime clone,
-      // so frames outside motion clips render the authored rest pose.
-      const cached = previewRuntime.assetCache.get(
-        item?.asset?.assetId ?? item?.source ?? "",
-      );
-      const source =
-        (cached ? await cached.catch(() => undefined) : undefined)?.scene ??
-        binding.root.children[0];
-      if (!item || !cloned || !source) continue;
-      const replacement = cloneImportedAsset(item, {
-        scene: source,
-        animations: binding.clips,
-      });
-      root.remove(cloned);
-      root.add(replacement);
-      renderImported.set(id, createImportedRuntime(replacement, binding.clips));
-    }
+    let scene: THREE.Scene | undefined;
     const materials = new Map<THREE.Material, THREE.Material>();
-    scene.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      const clone = (source: THREE.Material) => {
-        let material = materials.get(source);
-        if (!material) {
-          material = source.clone();
-          if (material instanceof THREE.MeshStandardMaterial)
-            material.emissive.set("#000000");
-          materials.set(source, material);
-        }
-        return material;
-      };
-      child.material = Array.isArray(child.material)
-        ? child.material.map(clone)
-        : clone(child.material);
-    });
     let renderer: THREE.WebGLRenderer | undefined;
     try {
       renderPublisher.current = onPrepareRender
         ? await onPrepareRender(exportStage)
         : onRender;
       controller.signal.throwIfAborted();
+      // Snapshot the scene only after preparation: a model whose preview
+      // load lands while preparing would otherwise export as its placeholder.
+      scene = previewRuntime.scene.clone(true);
+      const root = scene.getObjectByName("stage-objects")!;
+      const renderImported = new Map<string, ImportedRuntime>();
+      for (const [id, binding] of previewRuntime.imported) {
+        const item = exportStage.objects.find((object) => object.id === id);
+        const cloned = root.children.find(
+          (child) => child.userData.objectId === id,
+        );
+        // Clone from the pristine cached scene, not the posed runtime clone,
+        // so frames outside motion clips render the authored rest pose.
+        const cached = previewRuntime.assetCache.get(
+          item?.asset?.assetId ?? item?.source ?? "",
+        );
+        const source =
+          (cached ? await cached.catch(() => undefined) : undefined)?.scene ??
+          binding.root.children[0];
+        if (!item || !cloned || !source) continue;
+        const replacement = cloneImportedAsset(item, {
+          scene: source,
+          animations: binding.clips,
+        });
+        root.remove(cloned);
+        root.add(replacement);
+        renderImported.set(id, createImportedRuntime(replacement, binding.clips));
+      }
+      scene.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const clone = (source: THREE.Material) => {
+          let material = materials.get(source);
+          if (!material) {
+            material = source.clone();
+            if (material instanceof THREE.MeshStandardMaterial)
+              material.emissive.set("#000000");
+            materials.set(source, material);
+          }
+          return material;
+        };
+        child.material = Array.isArray(child.material)
+          ? child.material.map(clone)
+          : clone(child.material);
+      });
       renderer = new THREE.WebGLRenderer({ antialias: true });
       const size = stageOutputSize(exportStage.aspectRatio);
       renderer.setSize(size.width, size.height);
@@ -1306,7 +1338,7 @@ export function DirectorStage({
               applyImportedAnimation(renderImported, object);
             }
           }
-          renderer!.render(scene, camera);
+          renderer!.render(scene!, camera);
         },
       });
       if (active.current && !controller.signal.aborted) setRendered(blob);
@@ -1319,7 +1351,7 @@ export function DirectorStage({
         );
     } finally {
       // Geometry stays shared with the preview; cloned materials, renderer and shadows are export-owned.
-      scene.traverse((child) => {
+      scene?.traverse((child) => {
         if (child instanceof THREE.DirectionalLight) child.shadow.dispose();
       });
       materials.forEach((material) => material.dispose());
@@ -1407,7 +1439,20 @@ export function DirectorStage({
             {t("editors.stage.ui.importJson")}
           </button>
           <button
-            onClick={() =>
+            onClick={() => {
+              // Exports carry no model bytes: an import that exists only as a
+              // browser URL would become an unopenable object, so name it.
+              const unsaved = stageRef.current.objects.filter(
+                (object) => object.kind === "gltf" && !object.asset,
+              );
+              if (unsaved.length) {
+                setError(
+                  t("editors.stage.ui.exportUnsavedImports", {
+                    names: unsaved.map((object) => object.name).join(", "),
+                  }),
+                );
+                return;
+              }
               download(
                 JSON.stringify(
                   {
@@ -1421,8 +1466,8 @@ export function DirectorStage({
                 ),
                 `${node.data.title || "director-stage"}.stage.json`,
                 "application/json",
-              )
-            }
+              );
+            }}
           >
             {t("editors.stage.ui.exportJson")}
           </button>
@@ -1762,16 +1807,18 @@ export function DirectorStage({
                       }
                     />
                   </label>
-                  <label className="cw-domain-field">
-                    {t("editors.stage.ui.material")}
-                    <input
-                      type="color"
-                      value={object.color}
-                      onChange={(event) =>
-                        editObject({ color: event.target.value })
-                      }
-                    />
-                  </label>
+                  {object.kind !== "gltf" && (
+                    <label className="cw-domain-field">
+                      {t("editors.stage.ui.material")}
+                      <input
+                        type="color"
+                        value={object.color}
+                        onChange={(event) =>
+                          editObject({ color: event.target.value })
+                        }
+                      />
+                    </label>
+                  )}
                   {object.kind === "gltf" && (
                     <p className="cw-domain-note" role="status">
                       {object.role === "character"

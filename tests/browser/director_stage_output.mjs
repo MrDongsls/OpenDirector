@@ -44,6 +44,13 @@ const browser = await chromium.launch({
 const page = await browser.newPage({
   locale: "en-US",
   viewport: { width: 1700, height: 1100 },
+  // Still capture must stay at encoder resolution on high-DPI displays;
+  // run once with CREATION_DEVICE_SCALE_FACTOR=2 to verify.
+  ...(process.env.CREATION_DEVICE_SCALE_FACTOR
+    ? {
+        deviceScaleFactor: Number(process.env.CREATION_DEVICE_SCALE_FACTOR),
+      }
+    : {}),
 });
 await page.addInitScript(() =>
   localStorage.setItem("opendirector.modelSetup.v1", "dismissed"),

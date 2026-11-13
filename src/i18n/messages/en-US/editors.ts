@@ -334,6 +334,8 @@ export const editors = {
     "The selected file is not a stage JSON document. Model files are imported with “Import GLB / GLTF”.",
   "editors.stage.ui.importForeignAssets":
     "The stage file pins imported models that are not registered in this project: {names}. Open the stage in its original project, or import the model files here first.",
+  "editors.stage.ui.exportUnsavedImports":
+    "The stage file cannot carry imported models that exist only in this browser: {names}. Apply edits to save them to the project first.",
   "editors.stage.ui.exportFailed": "The preview video export failed.",
   "editors.stage.ui.motionTitle": "{title} · Motion preview",
   "editors.stage.ui.addCanvasFailed": "Adding to the canvas failed.",

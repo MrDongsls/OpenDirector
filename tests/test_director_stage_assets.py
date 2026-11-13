@@ -228,6 +228,19 @@ def test_editor_commands_accept_and_round_trip_self_contained_gltf(tmp_path):
     assert stored.data.objects[0].format == 'gltf' and stored.data.objects[0].animationNames == ('Idle',)
 
 
+def test_editor_commands_reject_stage_objects_mixing_gltf_format_with_glb_bytes(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    scene = json.dumps(dict(asset=dict(version='2.0'), animations=[dict(name='Idle')])).encode('utf-8')
+    info = upload('scene.gltf', scene)
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.mimeType == 'model/gltf+json'
+    # The declared container format must match the pinned bytes' media type.
+    objects = [dict(imported_stage_object(asset_ref(asset).model_dump(mode='json')), format='glb')]
+    assert send('editor.create', document=stage_document(pid, uuid4(), objects)).status == 'rejected'
+    assert projects.snapshot(pid).editorDocuments == ()
+
+
 def test_editor_commands_reject_stage_objects_pinning_malformed_glb(tmp_path):
     projects, pid, send, upload = stage_project(tmp_path)
     info = upload('prop.glb', b'glTF' + b'\x00' * 9)

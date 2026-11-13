@@ -28,17 +28,6 @@ import {
   createLocalStage,
   parseLocalStageValue,
 } from "../canvas/stageDocument.ts";
-
-/**
- * Stage object names are free display text; the backend upload name must
- * stay path-free, control-free and within its 255-character limit.
- */
-export function stageUploadTitle(name: string, format: string): string {
-  const safe =
-    name.replace(/[/\\\u0000-\u001f]+/g, "_").trim().slice(0, 250) ||
-    tNow("editors.stage.ui.objectGltf");
-  return `${safe}.${format}`;
-}
 import { mediaBlobDataUrl } from "../canvas/localMediaRuntime.ts";
 import { generationContentPatch } from "../canvas/generationReferenceContent.ts";
 import { assemblyResource } from "../canvas/editorAssembly.ts";
@@ -56,6 +45,19 @@ import {
   type CreationOperation,
 } from "./creationClient.ts";
 import { sameJsonValue } from "./sameJsonValue.ts";
+
+/**
+ * Stage object names are free display text; the backend upload name must
+ * stay path-free, control-free and within its 255-character limit. The cut
+ * counts code points, never splitting a surrogate pair.
+ */
+export function stageUploadTitle(name: string, format: string): string {
+  const safe =
+    Array.from(name.replace(/[/\\\u0000-\u001f]+/g, "_").trim())
+      .slice(0, 250)
+      .join("") || tNow("editors.stage.ui.objectGltf");
+  return `${safe}.${format}`;
+}
 
 /** Every comparison here is over a document that carries its media inline, so
  * it reads the values instead of serializing both sides to compare strings. */

@@ -155,6 +155,11 @@ test("stage upload titles stay path-free whatever the object is named", () => {
     true,
   );
   assert.equal(stageUploadTitle("长".repeat(300), "gltf").endsWith(".gltf"), true);
+  // The limit cuts code points, never splitting a surrogate pair: a cut
+  // title must round-trip through UTF-8 without replacement characters.
+  const emoji = stageUploadTitle("a".repeat(249) + "😀", "glb");
+  assert.ok(emoji.includes("😀"));
+  assert.equal(Buffer.from(emoji, "utf8").toString("utf8"), emoji);
 });
 
 test("stage JSON imports flag imported objects the project has not registered", () => {
@@ -333,4 +338,141 @@ test("director stage reads keep pinned identity when media bytes are unavailable
     )!.asset,
     imported.asset,
   );
+});
+
+/** The projection's save path for a director node, isolated from canvas state. */
+function directorWrite(node: {
+  id: string;
+  title?: string;
+  localStage?: unknown;
+  stillCapture?: string;
+  stillAsset?: AssetRef;
+}) {
+  const source = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/creation-project.json", import.meta.url),
+      "utf8",
+    ),
+  ) as ProjectSnapshot;
+  const client = new CreationClient(source.project.id);
+  client.install(source);
+  const imported: { name: string; kind: string }[] = [];
+  client.importBlob = async (blob, name, kind) => {
+    imported.push({ name, kind });
+    void blob;
+    return {
+      assetId: `imported-${imported.length}`,
+      revision: 1,
+      fingerprint: `sha256:${"d".repeat(64)}`,
+      kind,
+    };
+  };
+  const projection = new CreationProjection(client);
+  return {
+    imported,
+    document: (projection as unknown as {
+      editorInput: (
+        node: unknown,
+        kind: "director",
+      ) => Promise<{ kind: string; data: Record<string, unknown> }>;
+    }).editorInput(
+      {
+        id: node.id,
+        type: "external",
+        position: { x: 0, y: 0 },
+        data: {
+          title: node.title,
+          localStage: node.localStage,
+          stillCapture: node.stillCapture,
+          stillAsset: node.stillAsset,
+        },
+      },
+      "director",
+    ),
+  };
+}
+
+test("director saves register unsaved model bytes and captured stills as project assets", async () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    objects: [
+      ...createLocalStage().objects,
+      {
+        ...createLocalStage().objects[0]!,
+        id: "walker",
+        kind: "gltf",
+        name: "Walker",
+        role: "character",
+        format: "glb",
+        source: "data:application/octet-stream;base64,R0xGQg==",
+        animationNames: ["Walk"],
+        hasAnimation: true,
+        motionClips: [],
+      },
+    ],
+  });
+  const write = directorWrite({
+    id: "director-node",
+    title: "Stage board",
+    localStage: stage,
+    stillCapture: "data:image/png;base64,aVBoTkc=",
+  });
+  const document = await write.document;
+  assert.equal(document.kind, "director");
+  const objects = document.data.objects as {
+    kind: string;
+    asset?: { assetId: string };
+    source?: string;
+  }[];
+  const walker = objects.find((object) => object.kind === "gltf")!;
+  assert.equal(walker.asset?.assetId, "imported-1");
+  // Browser-only preview URLs never reach the contract.
+  assert.equal(walker.source, undefined);
+  assert.equal(
+    (document.data.still as { assetId: string }).assetId,
+    "imported-2",
+  );
+  assert.deepEqual(write.imported, [
+    { name: stageUploadTitle("Walker", "glb"), kind: "file" },
+    { name: "Stage board.png", kind: "image" },
+  ]);
+});
+
+test("director saves keep the pinned still when no fresh capture exists", async () => {
+  const still = {
+    assetId: "still-1",
+    revision: 1,
+    fingerprint: `sha256:${"e".repeat(64)}`,
+    kind: "image" as const,
+  };
+  const write = directorWrite({
+    id: "director-node",
+    localStage: createLocalStage(),
+    stillAsset: still,
+  });
+  const document = await write.document;
+  assert.deepEqual(document.data.still, still);
+  assert.deepEqual(write.imported, []);
+});
+
+test("director saves fail loudly when imported model bytes cannot be read", async () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    objects: [
+      {
+        ...createLocalStage().objects[0]!,
+        id: "walker",
+        kind: "gltf",
+        name: "Walker",
+        role: "character",
+        format: "glb",
+        // A blob URL that died with the page that created it.
+        source: "blob:revoked-session",
+        animationNames: [],
+        hasAnimation: false,
+        motionClips: [],
+      },
+    ],
+  });
+  await assert.rejects(directorWrite({ id: "director-node", localStage: stage }).document);
 });
