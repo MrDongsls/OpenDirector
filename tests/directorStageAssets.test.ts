@@ -5,6 +5,7 @@ import {
   parseLocalStageValue,
   sameLocalStage,
 } from "../src/canvas/stageDocument.ts";
+import { stageUploadTitle } from "../src/backend/creationProjection.ts";
 
 const asset = {
   assetId: "asset-gltf",
@@ -134,4 +135,15 @@ test("imported asset validation rejects missing identity, scene motion and absen
       }),
     /没有动画/,
   );
+});
+
+test("stage upload titles stay path-free whatever the object is named", () => {
+  assert.equal(stageUploadTitle("hero/v2", "glb"), "hero_v2.glb");
+  assert.equal(stageUploadTitle("a\\b\u0007c", "gltf"), "a_b_c.gltf");
+  assert.equal(stageUploadTitle("   ", "glb"), "导入模型.glb");
+  assert.equal(
+    stageUploadTitle("长".repeat(300), "gltf").length <= 255,
+    true,
+  );
+  assert.equal(stageUploadTitle("长".repeat(300), "gltf").endsWith(".gltf"), true);
 });

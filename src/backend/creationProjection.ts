@@ -28,6 +28,17 @@ import {
   createLocalStage,
   parseLocalStageValue,
 } from "../canvas/stageDocument.ts";
+
+/**
+ * Stage object names are free display text; the backend upload name must
+ * stay path-free, control-free and within its 255-character limit.
+ */
+export function stageUploadTitle(name: string, format: string): string {
+  const safe =
+    name.replace(/[/\\\u0000-\u001f]+/g, "_").trim().slice(0, 250) ||
+    tNow("editors.stage.ui.objectGltf");
+  return `${safe}.${format}`;
+}
 import { mediaBlobDataUrl } from "../canvas/localMediaRuntime.ts";
 import { generationContentPatch } from "../canvas/generationReferenceContent.ts";
 import { assemblyResource } from "../canvas/editorAssembly.ts";
@@ -1086,7 +1097,7 @@ export class CreationProjection {
               (object.source
                 ? await this.importResource({
                     kind: "file",
-                    title: `${object.name}.${object.format}`,
+                    title: stageUploadTitle(object.name, object.format!),
                     src: object.source,
                   })
                 : undefined);
