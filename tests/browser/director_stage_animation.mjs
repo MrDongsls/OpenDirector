@@ -102,23 +102,77 @@ try {
     .waitFor();
 
   const playhead = page.getByRole("slider", { name: "Stage playhead", exact: true });
-  await page
-    .getByRole("button", { name: "Add motion at playhead", exact: true })
-    .click();
-  await page.getByLabel("Motion 1", { exact: true }).waitFor();
-
   const viewport = page.getByRole("img", {
     name: "Interactive 3D director stage",
     exact: true,
   });
   await viewport.waitFor();
-  await playhead.fill("1");
-  await page.waitForTimeout(200);
-  const late = await viewport.screenshot();
+  // Screenshots of the same pose differ by rasterization jitter alone, so
+  // compare decoded pixels: identical poses stay near zero, a rotated model
+  // does not. Byte equality is too strict for WebGL output.
+  const pixelDiff = async (a, b) =>
+    page.evaluate(async ([aSrc, bSrc]) => {
+      const load = (src) =>
+        new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = src;
+        });
+      const [first, second] = [await load(aSrc), await load(bSrc)];
+      const canvas = document.createElement("canvas");
+      canvas.width = first.width;
+      canvas.height = first.height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(first, 0, 0);
+      const left = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(second, 0, 0);
+      const right = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let max = 0,
+        total = 0;
+      for (let i = 0; i < left.length; i += 4) {
+        const channel = Math.max(
+          Math.abs(left[i] - right[i]),
+          Math.abs(left[i + 1] - right[i + 1]),
+          Math.abs(left[i + 2] - right[i + 2]),
+        );
+        max = Math.max(max, channel);
+        total += channel;
+      }
+      return { max, mean: total / (left.length / 4) };
+    }, [
+      `data:image/png;base64,${a.toString("base64")}`,
+      `data:image/png;base64,${b.toString("base64")}`,
+    ]);
+
+  // Rest pose before any clip is bound, for the leave-the-clip comparison.
   await playhead.fill("0.1");
   await page.waitForTimeout(200);
-  const early = await viewport.screenshot();
-  assert.ok(Buffer.compare(early, late) !== 0, "playhead scrub animates the imported model");
+  const rest = await viewport.screenshot();
+
+  await playhead.fill("1");
+  await page
+    .getByRole("button", { name: "Add motion at playhead", exact: true })
+    .click();
+  await page.getByLabel("Motion 1", { exact: true }).waitFor();
+  // The clip spans [1, 2]: 1.5 is inside it, 0.1 has left it again.
+  await playhead.fill("1.5");
+  await page.waitForTimeout(200);
+  const animated = await viewport.screenshot();
+  await playhead.fill("0.1");
+  await page.waitForTimeout(200);
+  const restored = await viewport.screenshot();
+  const animatedDiff = await pixelDiff(restored, animated);
+  assert.ok(
+    animatedDiff.mean > 0.2,
+    `playhead scrub animates the imported model (mean=${animatedDiff.mean})`,
+  );
+  const restoreDiff = await pixelDiff(restored, rest);
+  assert.ok(
+    restoreDiff.mean < 0.1 && restoreDiff.max <= 8,
+    `leaving the motion clip restores the authored rest pose (mean=${restoreDiff.mean}, max=${restoreDiff.max})`,
+  );
 
   // An unnamed clip pins the animation_{index} fallback shared with the
   // backend probe; the committed metadata must round-trip that exact name.
@@ -163,7 +217,7 @@ try {
   assert.equal(imported.hasAnimation, true);
   assert.deepEqual(
     { start: imported.motionClips[0].start, duration: imported.motionClips[0].duration },
-    { start: 0, duration: 2 },
+    { start: 1, duration: 1 },
   );
   assert.equal(imported.motionClips[0].motion.preset, "walk");
   assert.ok(
@@ -191,6 +245,7 @@ try {
         "unnamed clips keep the loader's animation_0 fallback",
         "motion clip binds the imported model",
         "playhead scrub animates the preview",
+        "leaving the motion clip restores the authored rest pose",
         "MP4 renders through the same sampling",
         "animation metadata and motion clip persist",
         "no page errors",

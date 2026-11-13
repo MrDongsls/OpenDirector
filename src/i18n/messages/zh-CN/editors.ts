@@ -297,6 +297,8 @@ export const editors = {
     "所选文件不是舞台 JSON 文档。模型文件请使用「导入 GLB / GLTF」导入。",
   "editors.stage.ui.importForeignAssets":
     "舞台文件引用了未在本工程登记的导入模型：{names}。请在原工程中打开，或先在此工程导入对应模型文件。",
+  "editors.stage.ui.exportUnsavedImports":
+    "舞台文件无法携带仅存在于当前浏览器的导入模型：{names}。请先应用编辑，将其保存为工程素材。",
   "editors.stage.ui.exportFailed": "预演视频导出失败。",
   "editors.stage.ui.motionTitle": "{title} · 动作预演",
   "editors.stage.ui.addCanvasFailed": "加入画布失败。",
