@@ -26,6 +26,7 @@ class MediaMetadata(Contract):
     hasAudio: bool | None = Field(default=None, description='Whether the media contains an audio stream.')
     sampleRate: PositiveInt | None = Field(default=None, description='Audio samples per second.')
     channels: PositiveInt | None = Field(default=None, description='Audio channel count.')
+    selfContained: bool | None = Field(default=None, description='Whether a model container embeds all its buffers and images.')
 
     @model_validator(mode='after')
     def dimensions(self):

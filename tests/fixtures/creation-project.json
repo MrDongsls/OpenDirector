@@ -24,7 +24,8 @@
         "frameRate": null,
         "hasAudio": null,
         "sampleRate": null,
-        "channels": null
+        "channels": null,
+        "selfContained": null
       },
       "provenance": {
         "source": "upload",
@@ -59,7 +60,8 @@
         "frameRate": null,
         "hasAudio": null,
         "sampleRate": null,
-        "channels": null
+        "channels": null,
+        "selfContained": null
       },
       "provenance": {
         "source": "upload",
@@ -94,7 +96,8 @@
         "frameRate": null,
         "hasAudio": null,
         "sampleRate": null,
-        "channels": null
+        "channels": null,
+        "selfContained": null
       },
       "provenance": {
         "source": "upload",
@@ -129,7 +132,8 @@
         "frameRate": null,
         "hasAudio": null,
         "sampleRate": null,
-        "channels": null
+        "channels": null,
+        "selfContained": null
       },
       "provenance": {
         "source": "upload",
@@ -156,7 +160,7 @@
       "fingerprint": "sha256:000000000000000000000000000000000000000000000000000000000000000e",
       "path": "assets/00000000-0000-0000-0000-00000000000e",
       "metadata": {
-        "mimeType": "application/pdf",
+        "mimeType": "model/gltf-binary",
         "size": 100,
         "width": null,
         "height": null,
@@ -164,7 +168,8 @@
         "frameRate": null,
         "hasAudio": null,
         "sampleRate": null,
-        "channels": null
+        "channels": null,
+        "selfContained": true
       },
       "provenance": {
         "source": "upload",
@@ -199,7 +204,8 @@
         "frameRate": null,
         "hasAudio": null,
         "sampleRate": null,
-        "channels": null
+        "channels": null,
+        "selfContained": null
       },
       "provenance": {
         "source": "generated",

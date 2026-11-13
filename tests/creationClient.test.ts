@@ -851,6 +851,7 @@ test("reference replacement and hiding preserve the intended project relationshi
       hasAudio: null,
       sampleRate: null,
       channels: null,
+      selfContained: null,
     },
     provenance: {
       source: "manual",

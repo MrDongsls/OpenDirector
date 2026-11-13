@@ -1,4 +1,6 @@
 """The Director Stage contract keeps imported model identity in project assets."""
+import json
+import struct
 from uuid import uuid4
 
 import pytest
@@ -9,6 +11,16 @@ from opendirector.domain.creation.editors import StageObject
 from opendirector.infrastructure.creation_projects import CreationProjects
 from opendirector.infrastructure.creation_uploads import CreationUploads
 from opendirector.infrastructure.local_projects import LocalProjects
+
+
+def glb_bytes(document, binary=b''):
+    payload = json.dumps(document).encode('utf-8')
+    payload += b' ' * (-len(payload) % 4)
+    body = struct.pack('<I4s', len(payload), b'JSON') + payload
+    if binary:
+        padded = binary + b'\x00' * (-len(binary) % 4)
+        body += struct.pack('<I4s', len(padded), b'BIN\x00') + padded
+    return struct.pack('<4sII', b'glTF', 2, 12 + len(body)) + body
 
 
 def asset(kind='file'):
@@ -113,7 +125,7 @@ def test_editor_commands_resolve_every_imported_stage_asset_against_project_asse
     handle = uuid4()
     writer = CreationUploads(projects).begin(pid, handle, session, 'prop.glb')
     try:
-        writer.write(b'glTF-sentinel-bytes')
+        writer.write(glb_bytes(dict(asset=dict(version='2.0'), animations=[dict(name='Walk')])))
         info = writer.finish()
     finally:
         writer.abort()
@@ -136,3 +148,78 @@ def test_editor_commands_resolve_every_imported_stage_asset_against_project_asse
                   versions=[dict(objectType='editor_document', id=document_id, revision=1)],
                   document=changed)
     assert replay.status == 'rejected' and replay.commandId == saved.commandId
+
+
+def stage_project(tmp_path):
+    projects = CreationProjects(LocalProjects(tmp_path))
+    pid, session = uuid4(), str(uuid4())
+    assert projects.execute(parse_command(dict(projectId=pid, commandId=uuid4(), type='project.create',
+                                               payload=dict(name='Assets')))).status == 'applied'
+    projects.open(pid, session)
+
+    def send(kind, command_id=None, versions=(), **payload):
+        return projects.execute(parse_command(dict(projectId=pid, commandId=command_id or uuid4(),
+                                                   type=kind, expectedVersions=versions, payload=payload)),
+                                session=session)
+
+    def upload(name, content):
+        writer = CreationUploads(projects).begin(pid, uuid4(), session, name)
+        try:
+            writer.write(content)
+            return writer.finish()
+        finally:
+            writer.abort()
+
+    return projects, pid, send, upload
+
+
+def test_editor_commands_reject_stage_objects_pinning_non_model_files(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    info = upload('prop.fbx', b'Kaydara FBX Binary\x20\x20\x00\x1a\x00')
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.mimeType == 'application/octet-stream' and asset.metadata.selfContained is None
+    document = stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'))])
+    assert send('editor.create', document=document).status == 'rejected'
+    assert projects.snapshot(pid).editorDocuments == ()
+
+
+def test_editor_commands_reject_stage_objects_pinning_external_gltf(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    scene = json.dumps(dict(asset=dict(version='2.0'), buffers=[dict(uri='scene.bin', byteLength=4)])).encode('utf-8')
+    info = upload('scene.gltf', scene)
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.mimeType == 'model/gltf+json' and asset.metadata.selfContained is False
+    objects = [dict(imported_stage_object(asset_ref(asset).model_dump(mode='json')),
+                    format='gltf', animationNames=(), hasAnimation=False)]
+    assert send('editor.create', document=stage_document(pid, uuid4(), objects)).status == 'rejected'
+    assert projects.snapshot(pid).editorDocuments == ()
+
+
+def test_editor_commands_accept_and_round_trip_self_contained_gltf(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    scene = json.dumps(dict(asset=dict(version='2.0'), animations=[dict(name='Idle')])).encode('utf-8')
+    info = upload('scene.gltf', scene)
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.mimeType == 'model/gltf+json' and asset.metadata.selfContained is True
+    objects = [dict(imported_stage_object(asset_ref(asset).model_dump(mode='json')),
+                    format='gltf', animationNames=('Idle',))]
+    document_id = uuid4()
+    assert send('editor.create', document=stage_document(pid, document_id, objects)).status == 'applied'
+    reopened = CreationProjects(LocalProjects(projects.local.repository))
+    stored = reopened.snapshot(pid).editorDocuments[0]
+    assert stored.id == document_id and stored.data.objects[0].asset == asset_ref(asset)
+    assert stored.data.objects[0].format == 'gltf' and stored.data.objects[0].animationNames == ('Idle',)
+
+
+def test_editor_commands_reject_stage_objects_pinning_malformed_glb(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    info = upload('prop.glb', b'glTF' + b'\x00' * 9)
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.mimeType == 'application/octet-stream' and asset.metadata.selfContained is None
+    document = stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'))])
+    assert send('editor.create', document=document).status == 'rejected'
+    assert projects.snapshot(pid).editorDocuments == ()
