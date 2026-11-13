@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   createLocalStage,
   parseLocalStageValue,
+  probeStageAsset,
   sameLocalStage,
   unregisteredStageAssets,
 } from "../src/canvas/stageDocument.ts";
-import { stageUploadTitle } from "../src/backend/creationProjection.ts";
+import {
+  CreationProjection,
+  stageUploadTitle,
+} from "../src/backend/creationProjection.ts";
+import { CreationClient } from "../src/backend/creationClient.ts";
+import type { ProjectSnapshot } from "../src/contracts/generated.ts";
 import type { AssetRef } from "../src/contracts/generated.ts";
 
 const asset = {
@@ -194,5 +201,93 @@ test("stage JSON imports flag imported objects the project has not registered", 
   assert.deepEqual(
     unregisteredStageAssets(foreign, () => true),
     [],
+  );
+});
+
+function glbBuffer(payload: string): ArrayBuffer {
+  const padded = payload + " ".repeat((4 - (payload.length % 4)) % 4);
+  const body = new Uint8Array(12 + 8 + padded.length);
+  const view = new DataView(body.buffer);
+  body.set([0x67, 0x6c, 0x54, 0x46], 0);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, body.length, true);
+  view.setUint32(12, padded.length, true);
+  body.set([0x4a, 0x53, 0x4f, 0x4e], 16);
+  body.set(new TextEncoder().encode(padded), 20);
+  return body.buffer;
+}
+
+test("stage asset probing distinguishes models, external resources and corruption", () => {
+  const gltf = (document: unknown) =>
+    new TextEncoder().encode(JSON.stringify(document)).buffer as ArrayBuffer;
+  assert.deepEqual(
+    probeStageAsset(glbBuffer(JSON.stringify({ asset: { version: "2.0" } }))),
+    { format: "glb", external: false },
+  );
+  assert.deepEqual(
+    probeStageAsset(
+      glbBuffer(
+        JSON.stringify({
+          asset: { version: "2.0" },
+          buffers: [{ uri: "scene.bin", byteLength: 4 }],
+        }),
+      ),
+    ),
+    { format: "glb", external: true },
+  );
+  assert.deepEqual(
+    probeStageAsset(gltf({ asset: { version: "2.0" } })),
+    { format: "gltf", external: false },
+  );
+  // Valid magic but truncated: the declared length exceeds the bytes present.
+  const truncated = new Uint8Array(12);
+  truncated.set([0x67, 0x6c, 0x54, 0x46], 0);
+  new DataView(truncated.buffer).setUint32(8, 4096, true);
+  assert.equal(probeStageAsset(truncated.buffer), undefined);
+  // Valid container, unusable embedded JSON.
+  assert.equal(probeStageAsset(glbBuffer("{not json")), "corrupt");
+  assert.equal(probeStageAsset(glbBuffer("[1, 2, 3]")), "corrupt");
+  assert.equal(probeStageAsset(gltf({ no: "document" })), undefined);
+  assert.equal(probeStageAsset(gltf({ asset: { version: "2.0" } }).slice(0, 4)), undefined);
+});
+
+test("director stage reads keep pinned identity when media bytes are unavailable", async () => {
+  const source = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/creation-project.json", import.meta.url),
+      "utf8",
+    ),
+  ) as ProjectSnapshot;
+  const client = new CreationClient(source.project.id);
+  client.install(source);
+  const unavailable = "00000000-0000-0000-0000-00000000000e";
+  client.mediaUrl = async (id) => {
+    if (id === unavailable) throw new Error("asset content gone");
+    return `blob:${id}`;
+  };
+  client.view = async () => ({
+    projectId: client.id,
+    clientId: crypto.randomUUID(),
+    viewport: { x: 0, y: 0, zoom: 1 },
+    selectedItemIds: [],
+    activeEditorId: null,
+    playheads: [],
+    generationCounts: {},
+  });
+  const document = await new CreationProjection(client).read();
+  const stage = document.nodes
+    .map((node) => node.data.localStage)
+    .find((value) => value?.objects.some((object) => object.kind === "gltf"));
+  assert.ok(stage, "director stage node missing from projection");
+  const imported = stage.objects.find((object) => object.kind === "gltf")!;
+  assert.equal(imported.asset?.assetId, unavailable);
+  assert.equal(imported.source, undefined);
+  // The document stays valid without the preview URL; the editor shows the
+  // unavailable-asset notice instead of failing to reopen.
+  assert.deepEqual(
+    parseLocalStageValue(JSON.parse(JSON.stringify(stage))).objects.find(
+      (object) => object.kind === "gltf",
+    )!.asset,
+    imported.asset,
   );
 });

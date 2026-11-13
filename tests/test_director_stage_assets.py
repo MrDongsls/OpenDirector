@@ -228,6 +228,18 @@ def test_editor_commands_reject_stage_objects_pinning_malformed_glb(tmp_path):
     assert projects.snapshot(pid).editorDocuments == ()
 
 
+def test_truncated_glb_with_valid_header_stays_a_generic_file(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    # Version 2 and a plausible magic, but the declared total exceeds the file.
+    info = upload('prop.glb', b'glTF' + struct.pack('<II', 2, 4096))
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.mimeType == 'application/octet-stream' and asset.metadata.selfContained is None
+    document = stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'))])
+    assert send('editor.create', document=document).status == 'rejected'
+    assert projects.snapshot(pid).editorDocuments == ()
+
+
 def test_editor_commands_reject_animation_metadata_not_backed_by_asset_bytes(tmp_path):
     from opendirector.domain.projects import ProjectError
 
