@@ -42,6 +42,17 @@ def _has_external_gltf_resources(document):
                for entry in entries)
 
 
+def _gltf_animation_names(document):
+    """Names must match what a browser loader derives: declared names
+    trimmed, unnamed clips falling back to animation_{index}."""
+    animations = document.get('animations')
+    if not isinstance(animations, list):
+        return ()
+    return tuple((entry.get('name') if isinstance(entry, dict) and isinstance(entry.get('name'), str) else '').strip()
+                 or f'animation_{index}'
+                 for index, entry in enumerate(animations))
+
+
 class UploadOwner(Contract):
     projectId: UUID = Field(description='Owning project ID.')
     id: UUID = Field(description='Stable object ID.')
@@ -126,7 +137,8 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
                 parsed = None
             self_contained = (isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict)
                               and 'version' in parsed['asset'] and not _has_external_gltf_resources(parsed))
-            return 'file', MediaMetadata(size=size, mimeType='model/gltf-binary', selfContained=self_contained)
+            return 'file', MediaMetadata(size=size, mimeType='model/gltf-binary', selfContained=self_contained,
+                                         animationNames=_gltf_animation_names(parsed) if isinstance(parsed, dict) else None)
     # Stage models are probed as whole JSON documents, so oversized files are
     # rejected up front instead of being fully loaded into memory; oversized
     # JSON without a .gltf suffix stays a generic file.
@@ -137,7 +149,8 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
             parsed = None
         if isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict) and 'version' in parsed['asset']:
             return 'file', MediaMetadata(size=size, mimeType='model/gltf+json',
-                                         selfContained=not _has_external_gltf_resources(parsed))
+                                         selfContained=not _has_external_gltf_resources(parsed),
+                                         animationNames=_gltf_animation_names(parsed))
     elif suffix == '.gltf':
         raise ProjectError(STAGE_MODEL_TOO_LARGE, 413)
     with path.open('rb') as stream:

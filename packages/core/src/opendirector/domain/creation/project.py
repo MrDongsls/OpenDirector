@@ -215,6 +215,11 @@ class ProjectSnapshot(Contract):
                         asset = assets[obj.asset.assetId]
                         if asset.metadata.mimeType != STAGE_MODEL_MIME[obj.format] or asset.metadata.selfContained is not True:
                             raise ValueError('Imported stage objects require a matching self-contained GLB or GLTF asset. 导入的舞台对象需要匹配的自包含 GLB 或 GLTF 素材。')
+                        # Animation metadata is attested by the client; verify it
+                        # against the names the pinned bytes actually declare.
+                        names = asset.metadata.animationNames or ()
+                        if tuple(obj.animationNames) != names or obj.hasAnimation != bool(names):
+                            raise ValueError('Imported animation metadata must match the pinned asset bytes. 导入的动画信息必须与固定素材的实际字节一致。')
         return self
 
 

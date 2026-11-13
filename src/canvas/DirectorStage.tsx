@@ -1042,7 +1042,8 @@ export function DirectorStage({
             format: probed.format,
             source,
             animationNames: loaded.animations.map(
-              (clip, index) => clip.name.trim() || `clip-${index + 1}`,
+              // Fallback must match the backend probe's animation_{index}.
+              (clip, index) => clip.name.trim() || `animation_${index}`,
             ),
             hasAnimation: loaded.animations.length > 0,
             position: { x: current.objects.length * 1.3, y: 0, z: 0 },

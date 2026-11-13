@@ -807,6 +807,7 @@ test("reference replacement and hiding preserve the intended project relationshi
       sampleRate: null,
       channels: null,
       selfContained: null,
+      animationNames: null,
     },
     provenance: {
       source: "manual",

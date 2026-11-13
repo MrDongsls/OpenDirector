@@ -25,7 +25,8 @@
         "hasAudio": null,
         "sampleRate": null,
         "channels": null,
-        "selfContained": null
+        "selfContained": null,
+        "animationNames": null
       },
       "provenance": {
         "source": "upload",
@@ -61,7 +62,8 @@
         "hasAudio": null,
         "sampleRate": null,
         "channels": null,
-        "selfContained": null
+        "selfContained": null,
+        "animationNames": null
       },
       "provenance": {
         "source": "upload",
@@ -97,7 +99,8 @@
         "hasAudio": null,
         "sampleRate": null,
         "channels": null,
-        "selfContained": null
+        "selfContained": null,
+        "animationNames": null
       },
       "provenance": {
         "source": "upload",
@@ -133,7 +136,8 @@
         "hasAudio": null,
         "sampleRate": null,
         "channels": null,
-        "selfContained": null
+        "selfContained": null,
+        "animationNames": null
       },
       "provenance": {
         "source": "upload",
@@ -169,7 +173,8 @@
         "hasAudio": null,
         "sampleRate": null,
         "channels": null,
-        "selfContained": true
+        "selfContained": true,
+        "animationNames": null
       },
       "provenance": {
         "source": "upload",
@@ -205,7 +210,8 @@
         "hasAudio": null,
         "sampleRate": null,
         "channels": null,
-        "selfContained": null
+        "selfContained": null,
+        "animationNames": null
       },
       "provenance": {
         "source": "generated",

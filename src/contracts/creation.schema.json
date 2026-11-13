@@ -7873,6 +7873,22 @@
             "default": null,
             "description": "Whether a model container embeds all its buffers and images.",
             "title": "Selfcontained"
+          },
+          "animationNames": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Animation clip names declared by a parsed model container, in document order.",
+            "title": "Animationnames"
           }
         },
         "required": [
@@ -22403,6 +22419,22 @@
             "default": null,
             "description": "Whether a model container embeds all its buffers and images.",
             "title": "Selfcontained"
+          },
+          "animationNames": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Animation clip names declared by a parsed model container, in document order.",
+            "title": "Animationnames"
           }
         },
         "required": [
@@ -22415,7 +22447,8 @@
           "hasAudio",
           "sampleRate",
           "channels",
-          "selfContained"
+          "selfContained",
+          "animationNames"
         ],
         "title": "MediaMetadata",
         "type": "object"
