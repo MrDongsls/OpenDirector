@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from uuid import UUID, uuid5
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from opendirector.application.creation_artifacts import publish_artifact
 from opendirector.application.creation_assets import CreationAssets
@@ -20,8 +20,10 @@ from opendirector.infrastructure.local_projects import child
 from opendirector.installation import SOURCE_ROOT, BUNDLED
 
 ROOT = SOURCE_ROOT or BUNDLED
+# File registration goes through artifact.publish with the turn's execution
+# directory; the HTTP upload staging behind asset.import has no tool path.
 EXCLUDED = {'project.create', 'project.trash', 'project.restore', 'asset.import', 'job.checkpoint',
-            'canvas.applyEdit', 'canvas.publishMedia', 'timeline.publishRender'}
+            'canvas.applyEdit'}
 COMMANDS = {name: model for name, model in COMMAND_MODELS.items()
             if name not in EXCLUDED}
 for command_name, command_model in COMMANDS.items():
@@ -173,7 +175,27 @@ def command_help(schema: dict, path: str, project_id: UUID) -> dict:
             item['kind'] = spec['kind']
             item['binding'] = {'role': 'generation', 'objectRef': {'id': spec['id']}}
         model = COMMANDS[command]
-        parsed_payload = model.model_fields['payload'].annotation.model_validate(example['payload'])
+        payload_model = model.model_fields['payload'].annotation
+        # Some commands accept only some editor document kinds; walk the
+        # document union branches until one validates instead of assuming
+        # the timeline default from minimal_value.
+        candidates = [example['payload']]
+        document_node = payload.get('properties', {}).get('document')
+        if document_node is not None:
+            for key, choice in branches(resolve(document_node)).items():
+                if key != 'timeline':
+                    candidates.append(
+                        {**example['payload'], 'document': minimal_value(resolve(choice))})
+        parsed_payload = None
+        for candidate in candidates:
+            try:
+                parsed_payload = payload_model.model_validate(candidate)
+                example['payload'] = candidate
+                break
+            except ValidationError:
+                continue
+        if parsed_payload is None:
+            parsed_payload = payload_model.model_validate(candidates[0])
         sample = model.model_construct(type=command, payload=parsed_payload, projectId=project_id)
         versions = sample.required_versions()
         if versions:

@@ -39,6 +39,7 @@ GROUP_HELP = {
     "generation": "Submit a configured generation task.",
     "result": "Select a generated result for adoption.",
     "editor": "Create and save editable media documents.",
+    "timeline": "Publish rendered timeline results as project media.",
     "history": "Undo or redo reversible project operations.",
     "creation": "Apply multiple project operations atomically.",
 }
