@@ -4,8 +4,10 @@ import {
   createLocalStage,
   parseLocalStageValue,
   sameLocalStage,
+  unregisteredStageAssets,
 } from "../src/canvas/stageDocument.ts";
 import { stageUploadTitle } from "../src/backend/creationProjection.ts";
+import type { AssetRef } from "../src/contracts/generated.ts";
 
 const asset = {
   assetId: "asset-gltf",
@@ -146,4 +148,51 @@ test("stage upload titles stay path-free whatever the object is named", () => {
     true,
   );
   assert.equal(stageUploadTitle("长".repeat(300), "gltf").endsWith(".gltf"), true);
+});
+
+test("stage JSON imports flag imported objects the project has not registered", () => {
+  const stage = createLocalStage();
+  const [person] = stage.objects;
+  const foreign = parseLocalStageValue({
+    ...stage,
+    objects: [
+      person,
+      {
+        ...person,
+        id: "foreign-actor",
+        kind: "gltf",
+        name: "Foreign actor",
+        role: "character",
+        format: "glb",
+        asset,
+        animationNames: ["Walk"],
+        hasAnimation: true,
+        motionClips: [],
+      },
+      {
+        ...person,
+        id: "local-preview",
+        kind: "gltf",
+        name: "Unsaved import",
+        role: "scene",
+        format: "gltf",
+        source: "blob:unsaved",
+        animationNames: [],
+        hasAnimation: false,
+        motionClips: [],
+      },
+    ],
+  });
+  const registered = (ref: AssetRef) =>
+    ref.assetId !== "asset-gltf" && ref.revision <= 5;
+  const flagged = unregisteredStageAssets(foreign, registered);
+  assert.deepEqual(
+    flagged.map((object) => object.id),
+    ["foreign-actor"],
+  );
+  // A pinned asset at an older revision than the registered one still resolves.
+  assert.deepEqual(
+    unregisteredStageAssets(foreign, () => true),
+    [],
+  );
 });

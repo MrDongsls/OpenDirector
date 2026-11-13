@@ -886,3 +886,15 @@ export function stageOutputSize(ratio: LocalStageDocument["aspectRatio"]): {
     height: Math.round((1280 * h!) / Math.max(w!, h!) / 2) * 2,
   };
 }
+/** Imported objects pinning assets the current project has not registered.
+ * Stage JSON exports carry no model bytes, so such objects can neither
+ * preview nor apply; importers reject them explicitly instead of failing
+ * at save time. */
+export function unregisteredStageAssets(
+  stage: LocalStageDocument,
+  isRegistered: (asset: AssetRef) => boolean,
+): StageObject[] {
+  return stage.objects.filter(
+    (object) => object.kind === "gltf" && object.asset && !isRegistered(object.asset),
+  );
+}

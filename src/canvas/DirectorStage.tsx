@@ -5,6 +5,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { clone as cloneSkinnedObject } from "three/addons/utils/SkeletonUtils.js";
 import type { CanvasNode } from "./model";
+import type { AssetRef } from "../contracts/generated.ts";
 import { ControlSlider } from "./ControlSlider";
 import {
   createLocalStage,
@@ -17,6 +18,7 @@ import {
   stageFrameTimes,
   removeStageFrame,
   stageOutputSize,
+  unregisteredStageAssets,
   defaultStageCamera,
   STAGE_RATIOS,
   STAGE_ASSET_MAX_BYTES,
@@ -66,6 +68,9 @@ export interface DirectorStageProps {
   onPrepareRender?: (
     stage: LocalStageDocument,
   ) => Promise<(result: LinkedMediaResult) => Promise<boolean>>;
+  /** Whether a pinned asset is registered in the currently open project;
+   * stage JSON imports reject objects pinning assets it reports as absent. */
+  isRegisteredAsset?: (asset: AssetRef) => boolean;
 }
 interface LoadedStageAsset {
   scene: THREE.Object3D;
@@ -375,6 +380,7 @@ export function DirectorStage({
   onClose,
   onRender,
   onPrepareRender,
+  isRegisteredAsset,
 }: DirectorStageProps) {
   const { t } = useI18n();
   const [historyState, setHistoryState] = useState(() =>
@@ -980,6 +986,15 @@ export function DirectorStage({
   const importStage = async (file: File) => {
     try {
       const next = parseLocalStageValue(JSON.parse(await file.text()), t);
+      const foreign = isRegisteredAsset
+        ? unregisteredStageAssets(next, isRegisteredAsset)
+        : [];
+      if (foreign.length)
+        throw new Error(
+          t("editors.stage.ui.importForeignAssets", {
+            names: foreign.map((object) => object.name).join(", "),
+          }),
+        );
       if (active.current) {
         edit(() => next);
         setTime(0);
