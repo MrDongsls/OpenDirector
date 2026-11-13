@@ -290,6 +290,8 @@ export const editors = {
   "editors.stage.ui.rendererNotReady": "舞台渲染器尚未就绪。",
   "editors.stage.ui.screenshotFailed": "截图失败。",
   "editors.stage.ui.importFailed": "导入舞台失败。",
+  "editors.stage.ui.importForeignAssets":
+    "舞台文件引用了未在本工程登记的导入模型：{names}。请在原工程中打开，或先在此工程导入对应模型文件。",
   "editors.stage.ui.exportFailed": "预演视频导出失败。",
   "editors.stage.ui.motionTitle": "{title} · 动作预演",
   "editors.stage.ui.addCanvasFailed": "加入画布失败。",

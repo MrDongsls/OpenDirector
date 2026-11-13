@@ -327,6 +327,8 @@ export const editors = {
   "editors.stage.ui.rendererNotReady": "The stage renderer is not ready yet.",
   "editors.stage.ui.screenshotFailed": "The screenshot failed.",
   "editors.stage.ui.importFailed": "The stage could not be imported.",
+  "editors.stage.ui.importForeignAssets":
+    "The stage file pins imported models that are not registered in this project: {names}. Open the stage in its original project, or import the model files here first.",
   "editors.stage.ui.exportFailed": "The preview video export failed.",
   "editors.stage.ui.motionTitle": "{title} · Motion preview",
   "editors.stage.ui.addCanvasFailed": "Adding to the canvas failed.",
