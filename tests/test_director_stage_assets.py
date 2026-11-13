@@ -104,10 +104,12 @@ def stage_document(project_id, document_id, objects):
         objects=objects))
 
 
-def imported_stage_object(asset_value):
-    return dict(id='actor', kind='gltf', name='Imported actor', color='#b8c5ff',
-                keyframes=(), motionClips=(), asset=asset_value, role='character',
-                format='glb', animationNames=('Walk',), hasAnimation=True, **TRANSFORM)
+def imported_stage_object(asset_value, **changes):
+    value = dict(id='actor', kind='gltf', name='Imported actor', color='#b8c5ff',
+                 keyframes=(), motionClips=(), asset=asset_value, role='character',
+                 format='glb', animationNames=('Walk',), hasAnimation=True, **TRANSFORM)
+    value.update(changes)
+    return value
 
 
 def test_editor_commands_resolve_every_imported_stage_asset_against_project_assets(tmp_path):
@@ -131,6 +133,7 @@ def test_editor_commands_resolve_every_imported_stage_asset_against_project_asse
         writer.abort()
     assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
     asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.animationNames == ('Walk',)
 
     document_id = uuid4()
     document = stage_document(pid, document_id, [imported_stage_object(asset_ref(asset).model_dump(mode='json'))])
@@ -223,6 +226,41 @@ def test_editor_commands_reject_stage_objects_pinning_malformed_glb(tmp_path):
     document = stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'))])
     assert send('editor.create', document=document).status == 'rejected'
     assert projects.snapshot(pid).editorDocuments == ()
+
+
+def test_editor_commands_reject_animation_metadata_not_backed_by_asset_bytes(tmp_path):
+    from opendirector.domain.projects import ProjectError
+
+    projects, pid, send, upload = stage_project(tmp_path)
+    info = upload('actor.glb', glb_bytes(dict(asset=dict(version='2.0'), animations=[dict(name='Walk')])))
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+
+    def document_with(names):
+        return stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'),
+                                              animationNames=names, hasAnimation=bool(names))])
+
+    forged = send('editor.create', document=document_with(('Run',)))
+    assert forged.status == 'rejected' and projects.snapshot(pid).editorDocuments == ()
+
+    claimed = send('editor.create', document=document_with(('Walk',)))
+    assert claimed.status == 'applied', claimed
+    assert projects.snapshot(pid).editorDocuments[0].data.objects[0].animationNames == ('Walk',)
+
+
+def test_animation_names_fall_back_to_the_loader_convention_for_unnamed_clips(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    info = upload('actor.glb', glb_bytes(dict(asset=dict(version='2.0'), animations=[dict(channels=[])])))
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    asset = projects.snapshot(pid).assets[-1]
+    assert asset.metadata.animationNames == ('animation_0',)
+
+    def document_with(names):
+        return stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'),
+                                              animationNames=names, hasAnimation=bool(names))])
+
+    assert send('editor.create', document=document_with(('clip-1',))).status == 'rejected'
+    assert send('editor.create', document=document_with(('animation_0',))).status == 'applied'
 
 
 def test_oversized_stage_models_are_rejected_before_parsing(tmp_path):
