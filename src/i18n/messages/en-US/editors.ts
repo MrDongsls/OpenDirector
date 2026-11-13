@@ -344,7 +344,9 @@ export const editors = {
   "editors.stage.ui.redo": "Redo",
   "editors.stage.ui.importJson": "Import stage JSON",
   "editors.stage.ui.exportJson": "Export stage JSON",
-  "editors.stage.ui.screenshot": "Download camera still",
+  "editors.stage.ui.screenshot": "Capture camera still",
+  "editors.stage.ui.stillCaptured":
+    "Still captured. Applying registers it as a project image asset.",
   "editors.stage.ui.renderMp4": "Render preview MP4",
   "editors.stage.ui.renderProgress": "Rendering preview {percent}%",
   "editors.stage.ui.cancelRender": "Cancel rendering",

@@ -215,6 +215,13 @@
       "note": "Third-phase Director Stage acceptance: an animated GLB follows the stage timeline into the same sampled MP4; run against an isolated creation server."
     },
     {
+      "file": "director_stage_output.mjs",
+      "lanes": [
+        "manual"
+      ],
+      "note": "Fourth-phase Director Stage acceptance: captured stills and preview MP4s become tracked project assets the timeline can reference."
+    },
+    {
       "file": "double_shift_chat.mjs",
       "previewSafe": true,
       "lanes": [

@@ -422,6 +422,11 @@ export class CreationProjection {
                 : object,
             ),
           );
+        const stillSrc = doc.data.still
+          ? await this.client
+              .mediaUrl(doc.data.still.assetId)
+              .catch(() => undefined)
+          : undefined;
         return {
           external: { externalType: "director-stage" },
           localStage: parseLocalStageValue({
@@ -430,6 +435,8 @@ export class CreationProjection {
             ...doc.data,
             objects,
           }),
+          ...(doc.data.still ? { stillAsset: doc.data.still } : {}),
+          ...(stillSrc ? { src: stillSrc } : {}),
         };
         }
       case "layers":
@@ -1281,12 +1288,24 @@ export class CreationProjection {
             return { ...base, asset, role: object.role, format: object.format, animationNames: object.animationNames, hasAnimation: object.hasAnimation };
           }),
         );
+        const still = node.data.stillCapture
+          ? await this.importResource({
+              kind: "image",
+              title: node.data.title ?? "director-stage",
+              src: node.data.stillCapture,
+              fresh: true,
+            })
+          : node.data.stillAsset;
         const {
           format: _format,
           version: _version,
           ...data
         } = stage;
-        return { ...common, kind, data: { ...data, objects } };
+        return {
+          ...common,
+          kind,
+          data: { ...data, objects, ...(still ? { still } : {}) },
+        };
       }
       case "image_crop": {
         const crop = node.data.imageCrop!;

@@ -481,6 +481,7 @@ export function DirectorStage({
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
   const [assetNotice, setAssetNotice] = useState("");
+  const [pendingStill, setPendingStill] = useState<string | null>(null);
   const renderPublisher = useRef<
     ((result: LinkedMediaResult) => boolean | Promise<boolean>) | null
   >(null);
@@ -1050,12 +1051,38 @@ export function DirectorStage({
   };
   const captureKeyframe = () =>
     edit((current) => captureStageFrame(current, timeRef.current));
-  const screenshot = () => {
+  /** Same sampler and output frame as the MP4 render, at the encoder aspect. */
+  const captureOutputStill = () => {
     const current = runtime.current;
     if (!current) throw new Error(t("editors.stage.ui.rendererNotReady"));
-    displayPose(current, sampleStage(stageRef.current, timeRef.current));
-    current.renderer.render(current.scene, current.camera);
-    return current.renderer.domElement.toDataURL("image/png");
+    const size = stageOutputSize(stageRef.current.aspectRatio);
+    const dom = current.renderer.domElement;
+    const [width, height, aspect] = [dom.width, dom.height, current.camera.aspect];
+    current.renderer.setSize(size.width, size.height, false);
+    current.camera.aspect = size.width / size.height;
+    current.camera.updateProjectionMatrix();
+    try {
+      displayPose(current, sampleStage(stageRef.current, timeRef.current));
+      current.renderer.render(current.scene, current.camera);
+      return dom.toDataURL("image/png");
+    } finally {
+      current.renderer.setSize(width, height, false);
+      current.camera.aspect = aspect;
+      current.camera.updateProjectionMatrix();
+      current.renderer.render(current.scene, current.camera);
+    }
+  };
+  const captureStill = () => {
+    try {
+      setPendingStill(captureOutputStill());
+      setAssetNotice(t("editors.stage.ui.stillCaptured"));
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : t("editors.stage.ui.screenshotFailed"),
+      );
+    }
   };
   const download = (content: string, name: string, mime: string) => {
     downloadFile(
@@ -1064,21 +1091,6 @@ export function DirectorStage({
         : new Blob([content], { type: mime }),
       name,
     );
-  };
-  const snapshot = () => {
-    try {
-      download(
-        screenshot(),
-        `${node.data.title || "director-stage"}.png`,
-        "image/png",
-      );
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : t("editors.stage.ui.screenshotFailed"),
-      );
-    }
   };
   const importStage = async (file: File) => {
     try {
@@ -1365,7 +1377,10 @@ export function DirectorStage({
         commit.apply(() =>
           onApply(
             parseLocalStageValue(stageRef.current, t),
-            runtime.current ? screenshot() : undefined,
+            pendingStill ??
+              (!node.data.stillAsset && runtime.current
+                ? captureOutputStill()
+                : undefined),
           ),
         )
       }
@@ -1411,7 +1426,7 @@ export function DirectorStage({
           >
             {t("editors.stage.ui.exportJson")}
           </button>
-          <button disabled={!ready} onClick={snapshot}>
+          <button disabled={!ready} onClick={captureStill}>
             {t("editors.stage.ui.screenshot")}
           </button>
           <button
