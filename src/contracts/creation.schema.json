@@ -7860,6 +7860,19 @@
             "default": null,
             "description": "Audio channel count.",
             "title": "Channels"
+          },
+          "selfContained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whether a model container embeds all its buffers and images.",
+            "title": "Selfcontained"
           }
         },
         "required": [
@@ -22377,6 +22390,19 @@
             "default": null,
             "description": "Audio channel count.",
             "title": "Channels"
+          },
+          "selfContained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whether a model container embeds all its buffers and images.",
+            "title": "Selfcontained"
           }
         },
         "required": [
@@ -22388,7 +22414,8 @@
           "frameRate",
           "hasAudio",
           "sampleRate",
-          "channels"
+          "channels",
+          "selfContained"
         ],
         "title": "MediaMetadata",
         "type": "object"

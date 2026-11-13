@@ -1,5 +1,6 @@
 """Project/session-scoped streaming staging; no project facts before commit."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -30,6 +31,12 @@ def asset_name(value):
 
 def upload_asset_id(project_id, handle):
     return uuid5(UUID(str(project_id)), 'upload:' + str(handle))
+
+
+def _has_external_gltf_resources(document):
+    entries = [entry for key in ('buffers', 'images') if isinstance(document.get(key), list) for entry in document[key]]
+    return any(isinstance(entry, dict) and isinstance(entry.get('uri'), str) and not entry['uri'].startswith('data:')
+               for entry in entries)
 
 
 class UploadOwner(Contract):
@@ -94,6 +101,35 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
             return kind, MediaMetadata(size=size, mimeType=mime, **value)
         except ValueError:
             raise ProjectError('媒体尺寸、时长或音频信息无效，请检查文件。') from None
+    if prefix.startswith(b'glTF') and size >= 12:
+        version, total = int.from_bytes(prefix[4:8], 'little'), int.from_bytes(prefix[8:12], 'little')
+        if version == 2 and 12 <= total <= size:
+            document = None
+            with path.open('rb') as stream:
+                stream.seek(12)
+                while len(header := stream.read(8)) == 8:
+                    length = int.from_bytes(header[:4], 'little')
+                    payload = stream.read(length)
+                    if len(payload) < length:
+                        break
+                    if header[4:] == b'JSON':
+                        document = payload
+                        break
+            try:
+                parsed = json.loads(document) if document is not None else None
+            except ValueError:
+                parsed = None
+            self_contained = (isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict)
+                              and 'version' in parsed['asset'] and not _has_external_gltf_resources(parsed))
+            return 'file', MediaMetadata(size=size, mimeType='model/gltf-binary', selfContained=self_contained)
+    if prefix.lstrip()[:1] == b'{' or suffix == '.gltf':
+        try:
+            parsed = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (UnicodeDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict) and 'version' in parsed['asset']:
+            return 'file', MediaMetadata(size=size, mimeType='model/gltf+json',
+                                         selfContained=not _has_external_gltf_resources(parsed))
     with path.open('rb') as stream:
         mime = 'application/pdf' if stream.read(5) == b'%PDF-' else 'application/octet-stream'
     return 'file', MediaMetadata(size=size, mimeType=mime)

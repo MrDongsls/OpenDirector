@@ -49,9 +49,10 @@ def asset(number, kind):
     return Asset(**entity(number, kind=kind, name=f'{kind} source',
         fingerprint='sha256:' + f'{number:064x}', path=f'assets/{uid(number)}',
         metadata=dict(mimeType={'text': 'text/plain', 'image': 'image/png', 'video': 'video/mp4',
-                                'audio': 'audio/wav', 'file': 'application/pdf'}[kind], size=100,
+                                'audio': 'audio/wav', 'file': 'model/gltf-binary'}[kind], size=100,
                       **({'durationSeconds': 4} if kind in {'video', 'audio'} else {}),
-                      **({'width': 128, 'height': 128} if kind == 'image' else {})),
+                      **({'width': 128, 'height': 128} if kind == 'image' else {}),
+                      **({'selfContained': True} if kind == 'file' else {})),
         provenance=dict(source='upload')))
 
 

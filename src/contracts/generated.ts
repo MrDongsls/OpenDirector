@@ -792,6 +792,7 @@ export interface MediaMetadataInput extends ContractInput {
   readonly hasAudio?: boolean | null;
   readonly sampleRate?: number | null;
   readonly channels?: number | null;
+  readonly selfContained?: boolean | null;
 }
 
 export interface MediaPublicationOutputInput extends ContractInput {
@@ -2249,6 +2250,7 @@ export interface MediaMetadata extends Contract {
   readonly hasAudio: boolean | null;
   readonly sampleRate: number | null;
   readonly channels: number | null;
+  readonly selfContained: boolean | null;
 }
 
 export interface MediaPublicationOutput extends Contract {
