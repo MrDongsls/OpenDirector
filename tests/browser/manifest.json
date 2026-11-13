@@ -208,6 +208,13 @@
       "note": "GLB and animated-GLB fixture builders for the Director Stage browser checks."
     },
     {
+      "file": "director_stage_animation.mjs",
+      "lanes": [
+        "manual"
+      ],
+      "note": "Third-phase Director Stage acceptance: an animated GLB follows the stage timeline into the same sampled MP4; run against an isolated creation server."
+    },
+    {
       "file": "double_shift_chat.mjs",
       "previewSafe": true,
       "lanes": [
