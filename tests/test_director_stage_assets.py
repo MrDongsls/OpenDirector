@@ -1,8 +1,10 @@
 """The Director Stage contract keeps imported model identity in project assets."""
+from io import BytesIO
 import json
 import struct
 from uuid import uuid4
 
+from PIL import Image
 import pytest
 
 from opendirector.application.creation_canvas import asset_ref
@@ -250,8 +252,6 @@ def test_truncated_glb_with_valid_header_stays_a_generic_file(tmp_path):
 
 
 def test_editor_commands_reject_animation_metadata_not_backed_by_asset_bytes(tmp_path):
-    from opendirector.domain.projects import ProjectError
-
     projects, pid, send, upload = stage_project(tmp_path)
     info = upload('actor.glb', glb_bytes(dict(asset=dict(version='2.0'), animations=[dict(name='Walk')])))
     assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
@@ -298,6 +298,38 @@ def test_oversized_stage_models_are_rejected_before_parsing(tmp_path):
     # Oversized JSON without a model suffix stays a generic file, not a stage error.
     info = upload('data.json', b'{"payload":' + b' ' * oversized)
     assert info.kind == 'file' and info.metadata.mimeType == 'application/octet-stream'
+
+
+def png_bytes():
+    buffer = BytesIO()
+    Image.new('RGB', (13, 7), 'purple').save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+def test_director_still_pins_a_registered_image_asset_and_survives_reload(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    info = upload('board.png', png_bytes())
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    image = projects.snapshot(pid).assets[-1]
+    document = stage_document(pid, uuid4(), [])
+    document['data']['still'] = asset_ref(image).model_dump(mode='json')
+    assert send('editor.create', document=document).status == 'applied'
+    reopened = CreationProjects(LocalProjects(projects.local.repository)).snapshot(pid)
+    assert reopened.editorDocuments[0].data.still == asset_ref(image)
+
+
+def test_director_still_rejects_dangling_and_non_image_assets(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    dangling = stage_document(pid, uuid4(), [])
+    dangling['data']['still'] = dict(assetId=str(uuid4()), revision=1, fingerprint='sha256:' + 'b' * 64, kind='image')
+    assert send('editor.create', document=dangling).status == 'rejected'
+    info = upload('prop.glb', glb_bytes(dict(asset=dict(version='2.0'))))
+    assert send('asset.import', uploadHandle=info.id, name=info.name, expectedKind=info.kind).status == 'applied'
+    model = projects.snapshot(pid).assets[-1]
+    document = stage_document(pid, uuid4(), [])
+    document['data']['still'] = asset_ref(model).model_dump(mode='json')
+    assert send('editor.create', document=document).status == 'rejected'
+    assert projects.snapshot(pid).editorDocuments == ()
 
 
 def test_deeply_nested_model_json_stays_a_generic_file(tmp_path):
