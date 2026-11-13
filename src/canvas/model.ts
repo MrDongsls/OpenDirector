@@ -2,6 +2,7 @@ import { indexNodes, ancestors, isNodeLocked } from "./hierarchy.ts";
 import { mapCanvasToolTaskReferences } from "./toolCatalog.ts";
 import type { CanvasToolTask } from "./toolCatalog.ts";
 import type { LocalStageDocument } from "./stageDocument.ts";
+import type { AssetRef } from "../contracts/generated.ts";
 import type { LayerDocument } from "./layerDocument.ts";
 import { referenceIssue } from "./connectionPolicy.ts";
 import { SUBJECT_BASE_HEIGHT } from "./subjectLayout.ts";
@@ -199,6 +200,10 @@ export interface CanvasNodeData extends Record<string, unknown> {
   layers?: LayerDocument;
   imageCrop?: import("./imageCrop.ts").ImageCropState;
   localStage?: LocalStageDocument;
+  /** Captured stage still: the pinned project asset, plus transient capture
+   * bytes that the next save imports and registers as a project asset. */
+  stillAsset?: AssetRef;
+  stillCapture?: string;
   taskDraft?: CanvasToolTask;
   media?: { width?: number; height?: number; durationSeconds?: number };
 }

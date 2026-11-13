@@ -2387,14 +2387,9 @@ export function WorkspaceView({ rt }: { rt: WorkspaceRuntime }) {
             onApply={(localStage, screenshot) =>
               commitEditorData({
                 localStage,
-                ...(screenshot
-                  ? {
-                      src: screenshot,
-                      mimeType: "image/png",
-                      assetState: "ready",
-                      media: undefined,
-                    }
-                  : {}),
+                // The save projection imports these bytes and pins the
+                // resulting project asset on the director document.
+                ...(screenshot ? { stillCapture: screenshot } : {}),
               })
             }
             onClose={closeEditor}

@@ -28,9 +28,13 @@ const L = {
     redo: "Redo",
     openStage: "Open Director Stage",
     importAsset: "Import GLB / GLTF",
+    importJson: "Import stage JSON",
+    exportJson: "Export stage JSON",
     noAnimationNote:
       "This character has no animation data; it still follows camera, storyboard, and transform keyframes.",
     corruptAssetNotice:
+      "Could not read “broken.glb”: the GLB header is valid but the embedded JSON is missing or corrupt.",
+    loadFailedNotice:
       "Could not load “broken.glb”. The file may be corrupt or reference external resources.",
     unsupportedAssetNotice:
       "Only GLB and self-contained GLTF files are supported. FBX and external GLTF resources are not supported yet.",
@@ -63,8 +67,12 @@ const L = {
     redo: "重做",
     openStage: "打开导演台",
     importAsset: "导入 GLB / GLTF",
+    importJson: "导入舞台 JSON",
+    exportJson: "导出舞台 JSON",
     noAnimationNote: "此人物没有动画数据，但仍会跟随摄像机、分镜和变换关键帧。",
     corruptAssetNotice:
+      "无法读取「broken.glb」：GLB 头有效，但内嵌 JSON 缺失或已损坏。",
+    loadFailedNotice:
       "无法加载「broken.glb」。文件可能损坏，或引用了外部资源。",
     unsupportedAssetNotice:
       "目前仅支持 GLB 和自包含 GLTF；FBX 及外部 GLTF 资源暂不支持。",
@@ -164,6 +172,55 @@ const keyframeCount = (document) =>
     0,
   );
 
+// A well-formed stage document pinning a model asset this project never
+// registered; import must refuse it by naming the object.
+const foreignStage = {
+  format: "opendirector-local-stage",
+  version: 2,
+  background: "#151923",
+  grid: true,
+  duration: 6,
+  aspectRatio: "16:9",
+  activeCameraId: "camera-1",
+  cameraSource: "camera",
+  shots: [],
+  cameras: [
+    {
+      id: "camera-1",
+      name: "Camera",
+      pose: {
+        position: { x: 5, y: 3.5, z: 7 },
+        target: { x: 0, y: 1, z: 0 },
+        fov: 45,
+      },
+      keyframes: [],
+    },
+  ],
+  objects: [
+    {
+      id: "foreign-actor",
+      kind: "gltf",
+      name: "Foreign actor",
+      color: "#b8c5ff",
+      role: "character",
+      format: "glb",
+      asset: {
+        assetId: crypto.randomUUID(),
+        revision: 1,
+        fingerprint: `sha256:${"c".repeat(64)}`,
+        kind: "file",
+      },
+      animationNames: ["Walk"],
+      hasAnimation: true,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      keyframes: [],
+      motionClips: [],
+    },
+  ],
+};
+
 try {
   await page.goto(`${base}/ai-tool/ai-canvas/${projectId}?creation=unified`);
   await page.getByText(L.saved, { exact: true }).waitFor();
@@ -193,8 +250,17 @@ try {
   const objectId = createdRefs.document.data.objects[0].id;
   assert.equal(keyframeCount(createdRefs.document), 0);
 
-  // Corrupt, external GLTF, and GLB with external references are rejected
-  // with localized notices before anything reaches the project.
+  // Corrupt GLB JSON, plain non-GLB bytes, external GLTF, and GLB with
+  // external references are rejected with localized notices before anything
+  // reaches the project.
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "broken.glb",
+      mimeType: "model/gltf-binary",
+      buffer: makeCorruptGlb(),
+    });
+  await page.getByText(L.corruptAssetNotice, { exact: true }).waitFor();
   await page
     .locator('input[type="file"][accept*=".glb"]')
     .setInputFiles({
@@ -202,7 +268,7 @@ try {
       mimeType: "model/gltf-binary",
       buffer: Buffer.from("not a glb at all"),
     });
-  await page.getByText(L.corruptAssetNotice, { exact: true }).waitFor();
+  await page.getByText(L.loadFailedNotice, { exact: true }).waitFor();
   await page
     .locator('input[type="file"][accept*=".glb"]')
     .setInputFiles({
@@ -248,6 +314,43 @@ try {
     .getByRole("button", { name: "acceptance", exact: true })
     .waitFor();
   await page.getByText(L.noAnimationNote, { exact: true }).waitFor();
+
+  // The export carries no model bytes, so it must name imports that exist
+  // only as browser URLs instead of writing unopenable objects.
+  await page
+    .getByRole("button", { name: L.exportJson, exact: true })
+    .click();
+  await page
+    .getByText(L.exportUnsavedImportsNotice, { exact: true })
+    .waitFor();
+  // Stage JSON imports reject objects pinning assets this project never
+  // registered, keeping the in-progress stage untouched.
+  await page
+    .locator('input[type="file"][accept^="application/json"]')
+    .setInputFiles({
+      name: "foreign.stage.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(foreignStage)),
+    });
+  await page
+    .getByText(L.importForeignAssetsNotice, { exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "acceptance", exact: true })
+    .waitFor();
+  // Binary model bytes picked through the JSON importer surface the
+  // localized notice, never an engine SyntaxError quoting the file.
+  await page
+    .locator('input[type="file"][accept^="application/json"]')
+    .setInputFiles({
+      name: "acceptance.glb",
+      mimeType: "application/json",
+      buffer: makeGlb(),
+    });
+  await page.getByText(L.importNotJsonNotice, { exact: true }).waitFor();
+  await page
+    .getByRole("button", { name: "acceptance", exact: true })
+    .waitFor();
 
   await page.getByLabel(L.cameraName, { exact: true }).fill("Acceptance camera");
   await page
@@ -376,7 +479,6 @@ try {
   );
 
   const redo = page.getByLabel(L.redo, { exact: true });
-  // Saving is async, so redo may lag the undo click; wait instead of asserting.
   const redoDeadline = Date.now() + 20000;
   while (!(await redo.isEnabled())) {
     if (Date.now() > redoDeadline) throw new Error("redo never became enabled");
