@@ -1,46 +1,44 @@
+/** GLB fixtures for Director Stage browser checks. */
 import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 
-export function makeGlb() {
-  const json = Buffer.from(
-    JSON.stringify({
-      asset: { version: "2.0" },
-      scene: 0,
-      scenes: [{ nodes: [0] }],
-      nodes: [{ mesh: 0 }],
-      meshes: [
-        {
-          primitives: [
-            {
-              attributes: { POSITION: 0 },
-              indices: 1,
-            },
-          ],
-        },
-      ],
-      buffers: [{ byteLength: 42 }],
-      bufferViews: [
-        { buffer: 0, byteOffset: 0, byteLength: 36 },
-        { buffer: 0, byteOffset: 36, byteLength: 6 },
-      ],
-      accessors: [
-        {
-          bufferView: 0,
-          componentType: 5126,
-          count: 3,
-          type: "VEC3",
-          min: [0, 0, 0],
-          max: [1, 1, 0],
-        },
-        { bufferView: 1, componentType: 5123, count: 3, type: "SCALAR" },
-      ],
-    }),
-  );
-  const jsonChunk = Buffer.concat([
-    json,
-    Buffer.alloc((4 - (json.length % 4)) % 4, 0x20),
-  ]);
+function baseDocument() {
+  return {
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [
+      {
+        primitives: [
+          {
+            attributes: { POSITION: 0 },
+            indices: 1,
+          },
+        ],
+      },
+    ],
+    buffers: [{ byteLength: 42 }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 36, byteLength: 6 },
+    ],
+    accessors: [
+      {
+        bufferView: 0,
+        componentType: 5126,
+        count: 3,
+        type: "VEC3",
+        min: [0, 0, 0],
+        max: [1, 1, 0],
+      },
+      { bufferView: 1, componentType: 5123, count: 3, type: "SCALAR" },
+    ],
+  };
+}
+
+function baseBinary() {
   const binary = Buffer.alloc(44);
   binary.writeFloatLE(0, 0);
   binary.writeFloatLE(0, 4);
@@ -54,12 +52,22 @@ export function makeGlb() {
   binary.writeUInt16LE(0, 36);
   binary.writeUInt16LE(1, 38);
   binary.writeUInt16LE(2, 40);
-  const chunk = (type, data) => {
-    const header = Buffer.alloc(8);
-    header.writeUInt32LE(data.length, 0);
-    header.writeUInt32LE(type, 4);
-    return Buffer.concat([header, data]);
-  };
+  return binary;
+}
+
+const chunk = (type, data) => {
+  const header = Buffer.alloc(8);
+  header.writeUInt32LE(data.length, 0);
+  header.writeUInt32LE(type, 4);
+  return Buffer.concat([header, data]);
+};
+
+function glbOf(document, binary) {
+  const json = Buffer.from(JSON.stringify(document));
+  const jsonChunk = Buffer.concat([
+    json,
+    Buffer.alloc((4 - (json.length % 4)) % 4, 0x20),
+  ]);
   const body = Buffer.concat([
     chunk(0x4e4f534a, jsonChunk),
     chunk(0x004e4942, binary),
@@ -71,9 +79,63 @@ export function makeGlb() {
   return Buffer.concat([header, body]);
 }
 
+export function makeGlb(overrides = {}) {
+  return glbOf({ ...baseDocument(), ...overrides }, baseBinary());
+}
+
+/** A one-triangle GLB whose "Walk" clip rotates the node 90 degrees in one second. */
+export function makeAnimatedGlb() {
+  const base = baseDocument();
+  const document = {
+    ...base,
+    buffers: [{ byteLength: 84 }],
+    bufferViews: [
+      ...base.bufferViews,
+      { buffer: 0, byteOffset: 44, byteLength: 8 },
+      { buffer: 0, byteOffset: 52, byteLength: 32 },
+    ],
+    accessors: [
+      ...base.accessors,
+      {
+        bufferView: 2,
+        componentType: 5126,
+        count: 2,
+        type: "SCALAR",
+        min: [0],
+        max: [1],
+      },
+      { bufferView: 3, componentType: 5126, count: 2, type: "VEC4" },
+    ],
+    animations: [
+      {
+        name: "Walk",
+        channels: [{ sampler: 0, target: { node: 0, path: "rotation" } }],
+        samplers: [{ input: 2, output: 3, interpolation: "LINEAR" }],
+      },
+    ],
+  };
+  const binary = Buffer.alloc(84);
+  baseBinary().copy(binary, 0);
+  binary.writeFloatLE(0, 44);
+  binary.writeFloatLE(1, 48);
+  const half = Math.SQRT1_2;
+  binary.writeFloatLE(0, 52);
+  binary.writeFloatLE(0, 56);
+  binary.writeFloatLE(0, 60);
+  binary.writeFloatLE(1, 64);
+  binary.writeFloatLE(0, 68);
+  binary.writeFloatLE(0, 72);
+  binary.writeFloatLE(half, 76);
+  binary.writeFloatLE(half, 80);
+  return glbOf(document, binary);
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const destination = process.argv[2];
-  if (!destination) throw new Error("Usage: node director_stage_fixture.mjs <path>");
-  writeFileSync(destination, makeGlb());
+  if (!destination) throw new Error("Usage: node director_stage_fixture.mjs <path> [--animated]");
+  writeFileSync(
+    destination,
+    process.argv.includes("--animated") ? makeAnimatedGlb() : makeGlb(),
+  );
   console.log(destination);
 }

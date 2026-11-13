@@ -23,6 +23,10 @@ const L = {
     importAsset: "Import GLB / GLTF",
     noAnimationNote:
       "This character has no animation data; it still follows camera, storyboard, and transform keyframes.",
+    corruptAssetNotice:
+      "Could not load “broken.glb”. The file may be corrupt or reference external resources.",
+    unsupportedAssetNotice:
+      "Only GLB and self-contained GLTF files are supported. FBX and external GLTF resources are not supported yet.",
   },
   "zh-CN": {
     saved: "已保存到本机",
@@ -38,6 +42,10 @@ const L = {
     openStage: "打开导演台",
     importAsset: "导入 GLB / GLTF",
     noAnimationNote: "此人物没有动画数据，但仍会跟随摄像机、分镜和变换关键帧。",
+    corruptAssetNotice:
+      "无法加载「broken.glb」。文件可能损坏，或引用了外部资源。",
+    unsupportedAssetNotice:
+      "目前仅支持 GLB 和自包含 GLTF；FBX 及外部 GLTF 资源暂不支持。",
   },
 }[locale];
 assert.ok(L, `Unsupported DIRECTOR_STAGE_LOCALE: ${locale}`);
@@ -155,6 +163,37 @@ try {
   const objectId = createdRefs.document.data.objects[0].id;
   assert.equal(keyframeCount(createdRefs.document), 0);
 
+  // Corrupt, external GLTF, and GLB with external references are rejected
+  // with localized notices before anything reaches the project.
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "broken.glb",
+      mimeType: "model/gltf-binary",
+      buffer: Buffer.from("not a glb at all"),
+    });
+  await page.getByText(L.corruptAssetNotice, { exact: true }).waitFor();
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "external.gltf",
+      mimeType: "model/gltf+json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          asset: { version: "2.0" },
+          buffers: [{ uri: "scene.bin", byteLength: 4 }],
+        }),
+      ),
+    });
+  await page.getByText(L.unsupportedAssetNotice, { exact: true }).waitFor();
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "external.glb",
+      mimeType: "model/gltf-binary",
+      buffer: makeGlb({ images: [{ uri: "texture.png" }] }),
+    });
+  await page.getByText(L.unsupportedAssetNotice, { exact: true }).waitFor();
   await page
     .locator('input[type="file"][accept*=".glb"]')
     .setInputFiles({

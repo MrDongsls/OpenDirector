@@ -44,6 +44,7 @@ import "./director-stage.css";
 import {
   STAGE_MOTIONS,
   sampleJointPose,
+  selectStageAnimation,
   type StageMotion,
 } from "./stageMotion";
 import { encodeMp4 } from "./mp4Export";
@@ -199,23 +200,6 @@ async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
   const loaded = await new GLTFLoader().loadAsync(source);
   return { scene: loaded.scene, animations: loaded.animations };
 }
-const animationHints: Record<StageMotion["preset"], string[]> = {
-  idle: ["idle", "rest", "stand", "default"],
-  walk: ["walk", "walking"],
-  run: ["run", "running"],
-  wave: ["wave", "waving"],
-};
-function animationFor(
-  clips: readonly THREE.AnimationClip[],
-  motion: StageMotion["preset"],
-) {
-  const hints = animationHints[motion];
-  return (
-    clips.find((clip) =>
-      hints.some((hint) => clip.name.toLowerCase().includes(hint)),
-    ) ?? clips[0]
-  );
-}
 function applyImportedAnimation(
   imported: Map<string, ImportedRuntime>,
   value: StageSampleObject,
@@ -224,7 +208,7 @@ function applyImportedAnimation(
   const binding = imported.get(value.id);
   if (!binding?.mixer) return;
   const clip = value.motion
-    ? animationFor(binding.clips, value.motion.preset)
+    ? selectStageAnimation(binding.clips, value.motion.preset)
     : undefined;
   if (binding.activeClip !== clip) {
     binding.mixer.stopAllAction();
@@ -253,6 +237,70 @@ function hasExternalGltfResources(value: unknown) {
           !resource.uri.startsWith("data:"),
       ),
   );
+}
+type StageAssetProbe = { format: StageAssetFormat; external: boolean };
+/** Container and self-containment come from the actual bytes, matching the backend probe. */
+function probeStageAsset(buffer: ArrayBuffer): StageAssetProbe | undefined {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const glbVersion = () => view.getUint32(4, true);
+  const declaredLength = () => view.getUint32(8, true);
+  const isGltfDocument = (value: unknown) => {
+    const asset = (value as { asset?: unknown })?.asset;
+    return (
+      !!value &&
+      typeof value === "object" &&
+      !!asset &&
+      typeof asset === "object" &&
+      "version" in asset
+    );
+  };
+  const isGlbMagic =
+    bytes.length >= 4 &&
+    bytes[0] === 0x67 &&
+    bytes[1] === 0x6c &&
+    bytes[2] === 0x54 &&
+    bytes[3] === 0x46;
+  const isGlb =
+    bytes.length >= 12 &&
+    isGlbMagic &&
+    glbVersion() === 2 &&
+    declaredLength() >= 12 &&
+    declaredLength() <= bytes.length;
+  if (isGlbMagic && !isGlb) return undefined;
+  if (isGlb) {
+    let offset = 12;
+    while (offset + 8 <= bytes.length) {
+      const length = view.getUint32(offset, true);
+      if (view.getUint32(offset + 4, true) === 0x4e4f534a) {
+        try {
+          const document: unknown = JSON.parse(
+            new TextDecoder().decode(
+              bytes.subarray(offset + 8, offset + 8 + length),
+            ),
+          );
+          return {
+            format: "glb",
+            external: !isGltfDocument(document) || hasExternalGltfResources(document),
+          };
+        } catch {
+          return { format: "glb", external: true };
+        }
+      }
+      offset += 8 + length;
+    }
+    return { format: "glb", external: true };
+  }
+  try {
+    const document: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!isGltfDocument(document)) return undefined;
+    return {
+      format: "gltf",
+      external: hasExternalGltfResources(document),
+    };
+  } catch {
+    return undefined;
+  }
 }
 function poseJoints(group: THREE.Object3D, value: StageSampleObject) {
   if (value.kind !== "person") return;
@@ -986,14 +1034,10 @@ export function DirectorStage({
   };
   const importAsset = async (file: File) => {
     const lowerName = file.name.toLowerCase();
-    const format: StageAssetFormat | undefined = lowerName.endsWith(".glb")
-      ? "glb"
-      : lowerName.endsWith(".gltf")
-        ? "gltf"
-        : undefined;
     let source: string | undefined;
     try {
-      if (!format) throw new Error(t("editors.stage.ui.assetUnsupported"));
+      if (!lowerName.endsWith(".glb") && !lowerName.endsWith(".gltf"))
+        throw new Error(t("editors.stage.ui.assetUnsupported"));
       if (file.size > STAGE_ASSET_MAX_BYTES)
         throw new Error(
           t("editors.stage.ui.assetTooLarge", {
@@ -1001,11 +1045,24 @@ export function DirectorStage({
             size: STAGE_ASSET_MAX_BYTES / 1024 / 1024,
           }),
         );
-      if (format === "gltf" && hasExternalGltfResources(JSON.parse(await file.text())))
+      const probed = probeStageAsset(await file.arrayBuffer());
+      if (!probed)
+        throw new Error(
+          t("editors.stage.ui.assetLoadFailed", { name: file.name }),
+        );
+      if (probed.external)
         throw new Error(t("editors.stage.ui.assetUnsupported"));
       source = URL.createObjectURL(file);
       ownedAssetUrls.current.add(source);
-      const loaded = await loadStageAsset(source);
+      let loaded: LoadedStageAsset;
+      try {
+        loaded = await loadStageAsset(source);
+      } catch (reason) {
+        console.debug("stage asset import failed", reason);
+        throw new Error(
+          t("editors.stage.ui.assetLoadFailed", { name: file.name }),
+        );
+      }
       const id = crypto.randomUUID();
       const name = file.name.replace(/\.(?:glb|gltf)$/i, "") || file.name;
       edit((current) => ({
@@ -1018,7 +1075,7 @@ export function DirectorStage({
             name,
             color: "#b8c5ff",
             role: assetRole,
-            format,
+            format: probed.format,
             source,
             animationNames: loaded.animations.map(
               (clip, index) => clip.name.trim() || `clip-${index + 1}`,

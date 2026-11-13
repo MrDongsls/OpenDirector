@@ -14,7 +14,12 @@ import {
   stageOutputSize,
   STAGE_RATIOS,
 } from "../src/canvas/stageDocument.ts";
-import { sampleJointPose } from "../src/canvas/stageMotion.ts";
+import {
+  sampleJointPose,
+  selectStageAnimation,
+  STAGE_ANIMATION_HINTS,
+  STAGE_MOTIONS,
+} from "../src/canvas/stageMotion.ts";
 import {
   createStageHistory,
   commitStageHistory,
@@ -393,6 +398,28 @@ test("supported preview and output frames have one exact aspect with even encode
   }
   assert.throws(() =>
     parseLocalStageValue({ ...createLocalStage(), aspectRatio: "0:1" }),
+  );
+});
+
+test("motion presets pick imported clips by contained name hints, clip order first", () => {
+  assert.deepEqual(
+    Object.keys(STAGE_ANIMATION_HINTS).sort(),
+    Object.keys(STAGE_MOTIONS).sort(),
+  );
+  const clips = [
+    { name: "mixamo.com" },
+    { name: "Standing_Idle" },
+    { name: "Walk Forward" },
+  ];
+  assert.equal(selectStageAnimation(clips, "walk")!.name, "Walk Forward");
+  assert.equal(selectStageAnimation(clips, "idle")!.name, "Standing_Idle");
+  assert.equal(selectStageAnimation([{ name: "WALK" }], "walk")!.name, "WALK");
+  assert.equal(selectStageAnimation(clips, "run")!.name, "mixamo.com");
+  assert.equal(selectStageAnimation([], "walk"), undefined);
+  const ordered = [{ name: "Walking_slow" }, { name: "Walk_fast" }];
+  assert.equal(
+    selectStageAnimation(ordered, "walk")!.name,
+    "Walking_slow",
   );
 });
 
