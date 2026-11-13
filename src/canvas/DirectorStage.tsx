@@ -9,6 +9,7 @@ import { ControlSlider } from "./ControlSlider";
 import {
   createLocalStage,
   parseLocalStageValue,
+  probeStageAsset,
   sampleStage,
   editStageObjectAt,
   editStageCameraAt,
@@ -29,7 +30,6 @@ import type {
   StageShot,
   StageObject,
   StageTransform,
-  StageAssetFormat,
   StageAssetRole,
   Vector3Value,
 } from "./stageDocument";
@@ -254,89 +254,6 @@ function applyImportedAnimation(
   binding.mixer.setTime(
     clip && value.motion ? value.motionTime * value.motion.speed : 0,
   );
-}
-function hasExternalGltfResources(value: unknown) {
-  if (!value || typeof value !== "object") return true;
-  const document = value as {
-    buffers?: unknown;
-    images?: unknown;
-  };
-  return [document.buffers, document.images].some(
-    (resources) =>
-      Array.isArray(resources) &&
-      resources.some(
-        (resource) =>
-          resource &&
-          typeof resource === "object" &&
-          "uri" in resource &&
-          typeof resource.uri === "string" &&
-          !resource.uri.startsWith("data:"),
-      ),
-  );
-}
-type StageAssetProbe = { format: StageAssetFormat; external: boolean };
-/** Container and self-containment come from the actual bytes, matching the backend probe. */
-function probeStageAsset(buffer: ArrayBuffer): StageAssetProbe | undefined {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-  const glbVersion = () => view.getUint32(4, true);
-  const declaredLength = () => view.getUint32(8, true);
-  const isGltfDocument = (value: unknown) => {
-    const asset = (value as { asset?: unknown })?.asset;
-    return (
-      !!value &&
-      typeof value === "object" &&
-      !!asset &&
-      typeof asset === "object" &&
-      "version" in asset
-    );
-  };
-  const isGlbMagic =
-    bytes.length >= 4 &&
-    bytes[0] === 0x67 &&
-    bytes[1] === 0x6c &&
-    bytes[2] === 0x54 &&
-    bytes[3] === 0x46;
-  const isGlb =
-    bytes.length >= 12 &&
-    isGlbMagic &&
-    glbVersion() === 2 &&
-    declaredLength() >= 12 &&
-    declaredLength() <= bytes.length;
-  if (isGlbMagic && !isGlb) return undefined;
-  if (isGlb) {
-    let offset = 12;
-    while (offset + 8 <= bytes.length) {
-      const length = view.getUint32(offset, true);
-      if (view.getUint32(offset + 4, true) === 0x4e4f534a) {
-        try {
-          const document: unknown = JSON.parse(
-            new TextDecoder().decode(
-              bytes.subarray(offset + 8, offset + 8 + length),
-            ),
-          );
-          return {
-            format: "glb",
-            external: !isGltfDocument(document) || hasExternalGltfResources(document),
-          };
-        } catch {
-          return { format: "glb", external: true };
-        }
-      }
-      offset += 8 + length;
-    }
-    return { format: "glb", external: true };
-  }
-  try {
-    const document: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (!isGltfDocument(document)) return undefined;
-    return {
-      format: "gltf",
-      external: hasExternalGltfResources(document),
-    };
-  } catch {
-    return undefined;
-  }
 }
 function poseJoints(group: THREE.Object3D, value: StageSampleObject) {
   if (value.kind !== "person") return;
@@ -1079,6 +996,8 @@ export function DirectorStage({
           }),
         );
       const probed = probeStageAsset(await file.arrayBuffer());
+      if (probed === "corrupt")
+        throw new Error(t("editors.stage.ui.assetCorrupt", { name: file.name }));
       if (!probed)
         throw new Error(
           t("editors.stage.ui.assetLoadFailed", { name: file.name }),

@@ -61,6 +61,101 @@ export interface StageShot {
   duration: number;
 }
 export const STAGE_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"] as const;
+function hasExternalGltfResources(value: unknown) {
+  if (!value || typeof value !== "object") return true;
+  const document = value as {
+    buffers?: unknown;
+    images?: unknown;
+  };
+  return [document.buffers, document.images].some(
+    (resources) =>
+      Array.isArray(resources) &&
+      resources.some(
+        (resource) =>
+          resource &&
+          typeof resource === "object" &&
+          "uri" in resource &&
+          typeof resource.uri === "string" &&
+          !resource.uri.startsWith("data:"),
+      ),
+  );
+}
+const isGltfDocument = (value: unknown) => {
+  const asset = (value as { asset?: unknown })?.asset;
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !!asset &&
+    typeof asset === "object" &&
+    "version" in asset
+  );
+};
+export interface StageAssetProbe {
+  format: StageAssetFormat;
+  /** Whether the parsed document references external buffers or images. */
+  external: boolean;
+}
+/**
+ * Container and self-containment come from the actual bytes, matching the
+ * backend probe. Returns "corrupt" when a GLB header is valid but its
+ * embedded JSON chunk is missing, unparsable, or not a glTF document, and
+ * undefined when the bytes are no stage model at all.
+ */
+export function probeStageAsset(
+  buffer: ArrayBuffer,
+): StageAssetProbe | "corrupt" | undefined {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const glbVersion = () => view.getUint32(4, true);
+  const declaredLength = () => view.getUint32(8, true);
+  const isGlbMagic =
+    bytes.length >= 4 &&
+    bytes[0] === 0x67 &&
+    bytes[1] === 0x6c &&
+    bytes[2] === 0x54 &&
+    bytes[3] === 0x46;
+  const isGlb =
+    bytes.length >= 12 &&
+    isGlbMagic &&
+    glbVersion() === 2 &&
+    declaredLength() >= 12 &&
+    declaredLength() <= bytes.length;
+  if (isGlbMagic && !isGlb) return undefined;
+  if (isGlb) {
+    let offset = 12;
+    while (offset + 8 <= bytes.length) {
+      const length = view.getUint32(offset, true);
+      if (view.getUint32(offset + 4, true) === 0x4e4f534a) {
+        try {
+          const document: unknown = JSON.parse(
+            new TextDecoder().decode(
+              bytes.subarray(offset + 8, offset + 8 + length),
+            ),
+          );
+          if (!isGltfDocument(document)) return "corrupt";
+          return {
+            format: "glb",
+            external: hasExternalGltfResources(document),
+          };
+        } catch {
+          return "corrupt";
+        }
+      }
+      offset += 8 + length;
+    }
+    return "corrupt";
+  }
+  try {
+    const document: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!isGltfDocument(document)) return undefined;
+    return {
+      format: "gltf",
+      external: hasExternalGltfResources(document),
+    };
+  } catch {
+    return undefined;
+  }
+}
 export interface LocalStageDocument {
   format: "opendirector-local-stage";
   version: 2;

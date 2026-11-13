@@ -272,6 +272,8 @@ export const editors = {
   "editors.stage.ui.assetUnavailable": "导入素材不可用，请重新打开工程或再次导入。",
   "editors.stage.ui.assetLoadFailed":
     "无法加载「{name}」。文件可能损坏，或引用了外部资源。",
+  "editors.stage.ui.assetCorrupt":
+    "无法读取「{name}」：GLB 头有效，但内嵌 JSON 缺失或已损坏。",
   "editors.stage.ui.assetTooLarge":
     "「{name}」超过 {size} MB，请使用更小的 GLB 或 GLTF 文件。",
   "editors.stage.ui.assetUnsupported":
