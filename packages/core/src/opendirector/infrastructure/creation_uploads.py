@@ -15,7 +15,7 @@ from opendirector.domain.creation.assets import MediaMetadata, UploadInfo
 from opendirector.domain.creation.base import Contract, Fingerprint, MediaKind
 from opendirector.domain.projects import ProjectError
 from opendirector.infrastructure.creation_files import file_identity, upload_directory
-from opendirector.ports.files import MAX_CREATION_ASSET_BYTES, MAX_CREATION_TEXT_BYTES
+from opendirector.ports.files import MAX_CREATION_ASSET_BYTES, MAX_STAGE_MODEL_BYTES, MAX_CREATION_TEXT_BYTES
 from opendirector.infrastructure.creation_projects import directory, durable_json, sync_directory
 from opendirector.infrastructure.local_projects import child, read_json
 from opendirector.infrastructure.rename import rename_path
@@ -27,6 +27,9 @@ def asset_name(value):
     if not value or len(value) > 255 or any(ord(char) < 32 or char in '/\\' for char in value):
         raise ProjectError('素材名称不能为空，最长 255 字符，且不能包含路径或控制字符。')
     return value
+
+
+STAGE_MODEL_TOO_LARGE = '舞台模型文件应不超过 100 MiB，与浏览器导入上限一致。Stage model files must not exceed 100 MiB, matching the browser import limit.'
 
 
 def upload_asset_id(project_id, handle):
@@ -102,6 +105,8 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
         except ValueError:
             raise ProjectError('媒体尺寸、时长或音频信息无效，请检查文件。') from None
     if prefix.startswith(b'glTF') and size >= 12:
+        if size > MAX_STAGE_MODEL_BYTES:
+            raise ProjectError(STAGE_MODEL_TOO_LARGE, 413)
         version, total = int.from_bytes(prefix[4:8], 'little'), int.from_bytes(prefix[8:12], 'little')
         if version == 2 and 12 <= total <= size:
             document = None
@@ -122,7 +127,10 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
             self_contained = (isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict)
                               and 'version' in parsed['asset'] and not _has_external_gltf_resources(parsed))
             return 'file', MediaMetadata(size=size, mimeType='model/gltf-binary', selfContained=self_contained)
-    if prefix.lstrip()[:1] == b'{' or suffix == '.gltf':
+    # Stage models are probed as whole JSON documents, so oversized files are
+    # rejected up front instead of being fully loaded into memory; oversized
+    # JSON without a .gltf suffix stays a generic file.
+    if size <= MAX_STAGE_MODEL_BYTES and (prefix.lstrip()[:1] == b'{' or suffix == '.gltf'):
         try:
             parsed = json.loads(path.read_text(encoding='utf-8-sig'))
         except (UnicodeDecodeError, ValueError):
@@ -130,6 +138,8 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
         if isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict) and 'version' in parsed['asset']:
             return 'file', MediaMetadata(size=size, mimeType='model/gltf+json',
                                          selfContained=not _has_external_gltf_resources(parsed))
+    elif suffix == '.gltf':
+        raise ProjectError(STAGE_MODEL_TOO_LARGE, 413)
     with path.open('rb') as stream:
         mime = 'application/pdf' if stream.read(5) == b'%PDF-' else 'application/octet-stream'
     return 'file', MediaMetadata(size=size, mimeType=mime)

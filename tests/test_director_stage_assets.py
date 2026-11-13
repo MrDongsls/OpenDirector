@@ -223,3 +223,19 @@ def test_editor_commands_reject_stage_objects_pinning_malformed_glb(tmp_path):
     document = stage_document(pid, uuid4(), [imported_stage_object(asset_ref(asset).model_dump(mode='json'))])
     assert send('editor.create', document=document).status == 'rejected'
     assert projects.snapshot(pid).editorDocuments == ()
+
+
+def test_oversized_stage_models_are_rejected_before_parsing(tmp_path):
+    from opendirector.domain.projects import ProjectError
+
+    projects, pid, send, upload = stage_project(tmp_path)
+    oversized = 100 * 1024 * 1024 + 1
+    with pytest.raises(ProjectError) as glb_error:
+        upload('prop.glb', b'glTF' + struct.pack('<II', 2, 12) + b'x' * oversized)
+    assert glb_error.value.status == 413
+    with pytest.raises(ProjectError) as gltf_error:
+        upload('scene.gltf', b'{"asset":' + b' ' * oversized)
+    assert gltf_error.value.status == 413
+    # Oversized JSON without a model suffix stays a generic file, not a stage error.
+    info = upload('data.json', b'{"payload":' + b' ' * oversized)
+    assert info.kind == 'file' and info.metadata.mimeType == 'application/octet-stream'
