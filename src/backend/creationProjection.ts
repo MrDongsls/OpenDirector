@@ -657,6 +657,14 @@ export class CreationProjection {
           // Export records this so an imported generation node can be rebuilt
           // with real provenance instead of a fabricated one.
           const evidence = asset.provenance;
+          // Only director publications mark a stage preview; timeline renders
+          // share the 'rendered' source but are ordinary composition outputs.
+          const stagePreviewDoc =
+            evidence.source === "rendered" && evidence.editorDocumentId
+              ? snapshot.editorDocuments.find(
+                  (doc) => doc.id === evidence.editorDocumentId,
+                )
+              : undefined;
           node.data.generationProvenance = {
             source: evidence.source,
             ...(evidence.jobId ? { jobId: evidence.jobId } : {}),
@@ -668,6 +676,9 @@ export class CreationProjection {
               : {}),
             ...(evidence.editorRevision != null
               ? { editorRevision: evidence.editorRevision }
+              : {}),
+            ...(stagePreviewDoc?.kind === "director"
+              ? { stagePreview: true }
               : {}),
           };
           node.data.media = {

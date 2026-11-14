@@ -228,6 +228,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
     inputFingerprint?: string;
     editorDocumentId?: string;
     editorRevision?: number;
+    /** Derived at projection from the director execution document; drives presentation filtering. */
+    stagePreview?: boolean;
   };
   settings?: GenerationSettings;
   agentSettings?: AgentNodeSettings;
