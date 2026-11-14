@@ -83,8 +83,26 @@ export function makeGlb(overrides = {}) {
   return glbOf({ ...baseDocument(), ...overrides }, baseBinary());
 }
 
-/** A one-triangle GLB whose "Walk" clip rotates the node 90 degrees in one second. */
-export function makeAnimatedGlb() {
+/** A valid GLB container whose embedded JSON chunk cannot be parsed; the
+ * browser probe must report corruption instead of external resources. */
+export function makeCorruptGlb() {
+  const json = Buffer.from("not json at all");
+  const jsonChunk = Buffer.concat([
+    json,
+    Buffer.alloc((4 - (json.length % 4)) % 4, 0x20),
+  ]);
+  const body = chunk(0x4e4f534a, jsonChunk);
+  const header = Buffer.alloc(12);
+  header.writeUInt32LE(0x46546c67, 0);
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(12 + body.length, 8);
+  return Buffer.concat([header, body]);
+}
+
+/** A one-triangle GLB whose clip (optionally named) rotates the node 90
+ * degrees in one second. An unnamed clip pins the animation_{index} fallback
+ * shared with the backend probe. */
+function animatedGlb(name) {
   const base = baseDocument();
   const document = {
     ...base,
@@ -108,7 +126,7 @@ export function makeAnimatedGlb() {
     ],
     animations: [
       {
-        name: "Walk",
+        ...(name ? { name } : {}),
         channels: [{ sampler: 0, target: { node: 0, path: "rotation" } }],
         samplers: [{ input: 2, output: 3, interpolation: "LINEAR" }],
       },
@@ -128,6 +146,34 @@ export function makeAnimatedGlb() {
   binary.writeFloatLE(half, 76);
   binary.writeFloatLE(half, 80);
   return glbOf(document, binary);
+}
+
+export function makeAnimatedGlb() {
+  return animatedGlb("Walk");
+}
+
+export function makeUnnamedClipGlb() {
+  return animatedGlb(undefined);
+}
+
+/** A GLB whose material is KHR_materials_unlit; browsers load it as a
+ * MeshBasicMaterial with no emissive, which selection must tolerate. */
+export function makeUnlitGlb() {
+  return makeGlb({
+    extensionsUsed: ["KHR_materials_unlit"],
+    extensionsRequired: ["KHR_materials_unlit"],
+    materials: [
+      {
+        pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] },
+        extensions: { KHR_materials_unlit: {} },
+      },
+    ],
+    meshes: [
+      {
+        primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }],
+      },
+    ],
+  });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

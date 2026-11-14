@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createLocalStage,
   defaultStageCamera,
+  parseLocalStageDocument,
   parseLocalStageValue,
   sameLocalStage,
   sampleStage,
@@ -129,6 +130,20 @@ test("legacy malformed references and duplicate frame times remain rejected duri
       }),
     /摄像机/,
   );
+});
+
+test("stage JSON text imports reject unparsable files with a localized notice", () => {
+  const stage = createLocalStage();
+  assert.ok(
+    sameLocalStage(stage, parseLocalStageDocument(JSON.stringify(stage))),
+  );
+  // Binary model bytes fed to the JSON importer must not surface an engine
+  // SyntaxError quoting the file's contents.
+  assert.throws(
+    () => parseLocalStageDocument("glTF\u0000\u0000\u0000\u0000"),
+    /不是舞台 JSON/,
+  );
+  assert.throws(() => parseLocalStageDocument("{ broken"), /不是舞台 JSON/);
 });
 
 test("editing one axis at the playhead preserves the other sampled axes and untouched tracks", () => {

@@ -222,7 +222,7 @@ test("stage asset probing distinguishes models, external resources and corruptio
     new TextEncoder().encode(JSON.stringify(document)).buffer as ArrayBuffer;
   assert.deepEqual(
     probeStageAsset(glbBuffer(JSON.stringify({ asset: { version: "2.0" } }))),
-    { format: "glb", external: false },
+    { format: "glb", external: false, compressed: false },
   );
   assert.deepEqual(
     probeStageAsset(
@@ -233,11 +233,11 @@ test("stage asset probing distinguishes models, external resources and corruptio
         }),
       ),
     ),
-    { format: "glb", external: true },
+    { format: "glb", external: true, compressed: false },
   );
   assert.deepEqual(
     probeStageAsset(gltf({ asset: { version: "2.0" } })),
-    { format: "gltf", external: false },
+    { format: "gltf", external: false, compressed: false },
   );
   // Valid magic but truncated: the declared length exceeds the bytes present.
   const truncated = new Uint8Array(12);
@@ -249,6 +249,49 @@ test("stage asset probing distinguishes models, external resources and corruptio
   assert.equal(probeStageAsset(glbBuffer("[1, 2, 3]")), "corrupt");
   assert.equal(probeStageAsset(gltf({ no: "document" })), undefined);
   assert.equal(probeStageAsset(gltf({ asset: { version: "2.0" } }).slice(0, 4)), undefined);
+});
+
+test("stage asset probing flags documents that need missing decoders", () => {
+  const gltf = (document: unknown) =>
+    new TextEncoder().encode(JSON.stringify(document)).buffer as ArrayBuffer;
+  for (const extension of [
+    "KHR_draco_mesh_compression",
+    "EXT_meshopt_compression",
+    "KHR_texture_basisu",
+  ]) {
+    assert.deepEqual(
+      probeStageAsset(
+        gltf({
+          asset: { version: "2.0" },
+          extensionsUsed: [extension],
+        }),
+      ),
+      { format: "gltf", external: false, compressed: true },
+      extension,
+    );
+    assert.deepEqual(
+      probeStageAsset(
+        glbBuffer(
+          JSON.stringify({
+            asset: { version: "2.0" },
+            extensionsRequired: [extension],
+          }),
+        ),
+      ),
+      { format: "glb", external: false, compressed: true },
+      extension,
+    );
+  }
+  // Unrelated extensions stay importable.
+  assert.deepEqual(
+    probeStageAsset(
+      gltf({
+        asset: { version: "2.0" },
+        extensionsUsed: ["KHR_materials_unlit"],
+      }),
+    ),
+    { format: "gltf", external: false, compressed: false },
+  );
 });
 
 test("director stage reads keep pinned identity when media bytes are unavailable", async () => {

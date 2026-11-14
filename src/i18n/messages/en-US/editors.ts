@@ -233,6 +233,7 @@ export const editors = {
   "editors.layerDocument.defaultName": "Original image",
   "editors.layerDocument.error.size":
     "A local layer canvas allows at most 8192 pixels per side and 16.77 million pixels total. Make the image smaller first.",
+  "editors.layerDocument.error.notJson": "The selected file is not a JSON document.",
   "editors.layerDocument.error.structure": "The layer file structure is invalid.",
   "editors.layerDocument.error.invalidParameter":
     "The layer file contains invalid dimensions, coordinates, or parameters.",
@@ -312,6 +313,8 @@ export const editors = {
     "“{name}” is larger than {size} MB. Use a smaller GLB or GLTF file.",
   "editors.stage.ui.assetUnsupported":
     "Only GLB and self-contained GLTF files are supported. FBX and external GLTF resources are not supported yet.",
+  "editors.stage.ui.assetCompressed":
+    "Compressed models (Draco, meshopt, or KTX2) are not supported yet. Export the model uncompressed and import it again.",
   "editors.stage.ui.assetImported":
     "Imported {name} · {animationCount} animation clips",
   "editors.stage.ui.assetImportedStatic": "Imported {name} · no animation data",
@@ -327,6 +330,8 @@ export const editors = {
   "editors.stage.ui.rendererNotReady": "The stage renderer is not ready yet.",
   "editors.stage.ui.screenshotFailed": "The screenshot failed.",
   "editors.stage.ui.importFailed": "The stage could not be imported.",
+  "editors.stage.ui.importNotJson":
+    "The selected file is not a stage JSON document. Model files are imported with “Import GLB / GLTF”.",
   "editors.stage.ui.importForeignAssets":
     "The stage file pins imported models that are not registered in this project: {names}. Open the stage in its original project, or import the model files here first.",
   "editors.stage.ui.exportFailed": "The preview video export failed.",

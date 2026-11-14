@@ -9,6 +9,7 @@ import type { AssetRef } from "../contracts/generated.ts";
 import { ControlSlider } from "./ControlSlider";
 import {
   createLocalStage,
+  parseLocalStageDocument,
   parseLocalStageValue,
   probeStageAsset,
   sampleStage,
@@ -214,6 +215,25 @@ async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
   const loaded = await new GLTFLoader().loadAsync(source);
   return { scene: loaded.scene, animations: loaded.animations };
 }
+function applySelectionHighlight(
+  root: THREE.Object3D,
+  selected: string | null,
+) {
+  root.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      let owner: THREE.Object3D | null = child;
+      while (owner && !owner.userData.objectId) owner = owner.parent;
+      const highlighted = owner?.userData.objectId === selected;
+      // Imported models may use unlit or other materials without emissive.
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : [child.material];
+      for (const material of materials)
+        if (material instanceof THREE.MeshStandardMaterial)
+          material.emissive.set(highlighted ? "#1e1536" : "#000000");
+    }
+  });
+}
 function createImportedRuntime(
   group: THREE.Group,
   clips: THREE.AnimationClip[],
@@ -414,6 +434,7 @@ export function DirectorStage({
     stageRef = useRef(stage),
     timeRef = useRef(time),
     playingRef = useRef(playing),
+    selectedRef = useRef(selected),
     importInput = useRef<HTMLInputElement>(null),
     assetInput = useRef<HTMLInputElement>(null),
     ownedAssetUrls = useRef(new Set<string>()),
@@ -421,6 +442,7 @@ export function DirectorStage({
   stageRef.current = stage;
   timeRef.current = time;
   playingRef.current = playing;
+  selectedRef.current = selected;
   const sampled = sampleStage(stage, time);
   const object = sampled.objects.find((item) => item.id === selected);
   const cameraValue = sampled.camera;
@@ -799,6 +821,25 @@ export function DirectorStage({
           }
         });
     }
+    // Loaded clones share GPU resources with their cached scene, so a cached
+    // scene must stay resident while any live object or clone references it;
+    // once the last one is gone, dispose instead of holding model-sized memory.
+    const liveKeys = new Set<string>();
+    for (const child of current.root.children) {
+      const key = child.userData.assetCacheKey;
+      if (typeof key === "string") liveKeys.add(key);
+    }
+    for (const item of stage.objects)
+      if (item.kind === "gltf")
+        liveKeys.add(item.asset?.assetId ?? item.source ?? "");
+    for (const [key, pending] of [...current.assetCache]) {
+      if (liveKeys.has(key)) continue;
+      current.assetCache.delete(key);
+      void pending.then(
+        (loaded) => disposeObject(loaded.scene),
+        () => undefined,
+      );
+    }
   }, [stage.objects, ready]);
   useEffect(() => {
     const current = runtime.current;
@@ -839,6 +880,7 @@ export function DirectorStage({
           );
           if (previous) current.root.remove(previous);
           const group = cloneImportedAsset(item, loaded);
+          group.userData.assetCacheKey = cacheKey;
           current.root.add(group);
           current.imported.set(
             item.id,
@@ -846,6 +888,9 @@ export function DirectorStage({
           );
           if (item.role === "character" && !loaded.animations.length)
             setAssetNotice(t("editors.stage.ui.assetNotice"));
+          // The clone lands after the selection effect ran, so it must pick up
+          // the highlight for the currently selected object itself.
+          applySelectionHighlight(group, selectedRef.current);
           displayPose(current, sampleStage(stageRef.current, timeRef.current));
         } catch {
           if (!cancelled && active.current)
@@ -869,16 +914,7 @@ export function DirectorStage({
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
-    current.root.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        const material = child.material as THREE.MeshStandardMaterial;
-        let owner: THREE.Object3D | null = child;
-        while (owner && !owner.userData.objectId) owner = owner.parent;
-        material.emissive.set(
-          owner?.userData.objectId === selected ? "#1e1536" : "#000000",
-        );
-      }
-    });
+    applySelectionHighlight(current.root, selected);
   }, [selected, stage.objects, ready]);
   useEffect(() => {
     if (!runtime.current) return;
@@ -985,7 +1021,7 @@ export function DirectorStage({
   };
   const importStage = async (file: File) => {
     try {
-      const next = parseLocalStageValue(JSON.parse(await file.text()), t);
+      const next = parseLocalStageDocument(await file.text(), t);
       const foreign = isRegisteredAsset
         ? unregisteredStageAssets(next, isRegisteredAsset)
         : [];
@@ -1031,8 +1067,13 @@ export function DirectorStage({
         );
       if (probed.external)
         throw new Error(t("editors.stage.ui.assetUnsupported"));
-      source = URL.createObjectURL(file);
-      ownedAssetUrls.current.add(source);
+      // Self-contained but Draco/meshopt/KTX2-compressed: the loader has no
+      // decoders, so say that instead of letting the parse fail as "corrupt".
+      if (probed.compressed)
+        throw new Error(t("editors.stage.ui.assetCompressed"));
+      const url = URL.createObjectURL(file);
+      source = url;
+      ownedAssetUrls.current.add(url);
       let loaded: LoadedStageAsset;
       try {
         loaded = await loadStageAsset(source);

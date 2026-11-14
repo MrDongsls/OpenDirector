@@ -94,6 +94,24 @@ export interface StageAssetProbe {
   format: StageAssetFormat;
   /** Whether the parsed document references external buffers or images. */
   external: boolean;
+  /** Whether the document needs decoders the browser loader cannot provide. */
+  compressed: boolean;
+}
+const COMPRESSED_GLTF_EXTENSIONS = new Set([
+  "KHR_draco_mesh_compression",
+  "EXT_meshopt_compression",
+  "KHR_texture_basisu",
+]);
+function usesCompressedGltfExtensions(value: unknown) {
+  const document = (value as { extensionsUsed?: unknown; extensionsRequired?: unknown }) ?? {};
+  return [document.extensionsUsed, document.extensionsRequired].some(
+    (list) =>
+      Array.isArray(list) &&
+      list.some(
+        (name) =>
+          typeof name === "string" && COMPRESSED_GLTF_EXTENSIONS.has(name),
+      ),
+  );
 }
 /**
  * Container and self-containment come from the actual bytes, matching the
@@ -136,6 +154,7 @@ export function probeStageAsset(
           return {
             format: "glb",
             external: hasExternalGltfResources(document),
+            compressed: usesCompressedGltfExtensions(document),
           };
         } catch {
           return "corrupt";
@@ -151,6 +170,7 @@ export function probeStageAsset(
     return {
       format: "gltf",
       external: hasExternalGltfResources(document),
+      compressed: usesCompressedGltfExtensions(document),
     };
   } catch {
     return undefined;
@@ -411,6 +431,20 @@ function migrateV1(
       };
     }),
   };
+}
+/** Text boundary for stage imports; unparsable files report a localized error
+ * instead of an engine SyntaxError quoting the file's bytes. */
+export function parseLocalStageDocument(
+  text: string,
+  t: Translate = defaultTranslate,
+): LocalStageDocument {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error(t("editors.stage.ui.importNotJson"));
+  }
+  return parseLocalStageValue(value, t);
 }
 export function parseLocalStageValue(
   input: unknown,

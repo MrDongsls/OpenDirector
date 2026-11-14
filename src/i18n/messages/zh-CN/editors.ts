@@ -212,6 +212,7 @@ export const editors = {
   "editors.layerDocument.defaultName": "原始图片",
   "editors.layerDocument.error.size":
     "本地图层画布最多 8192 像素 / 边、总计 1677 万像素。请先缩小图片。",
+  "editors.layerDocument.error.notJson": "所选文件不是 JSON 文档。",
   "editors.layerDocument.error.structure": "图层文件结构不正确。",
   "editors.layerDocument.error.invalidParameter":
     "图层文件包含无效的尺寸、坐标或参数。",
@@ -278,6 +279,8 @@ export const editors = {
     "「{name}」超过 {size} MB，请使用更小的 GLB 或 GLTF 文件。",
   "editors.stage.ui.assetUnsupported":
     "目前仅支持 GLB 和自包含 GLTF；FBX 及外部 GLTF 资源暂不支持。",
+  "editors.stage.ui.assetCompressed":
+    "暂不支持压缩模型（Draco、meshopt 或 KTX2）。请先导出未压缩的模型，再重新导入。",
   "editors.stage.ui.assetImported": "已导入 {name} · {animationCount} 个动画片段",
   "editors.stage.ui.assetImportedStatic": "已导入 {name} · 无动画数据",
   "editors.stage.ui.degreesSuffix": "（度）",
@@ -290,6 +293,8 @@ export const editors = {
   "editors.stage.ui.rendererNotReady": "舞台渲染器尚未就绪。",
   "editors.stage.ui.screenshotFailed": "截图失败。",
   "editors.stage.ui.importFailed": "导入舞台失败。",
+  "editors.stage.ui.importNotJson":
+    "所选文件不是舞台 JSON 文档。模型文件请使用「导入 GLB / GLTF」导入。",
   "editors.stage.ui.importForeignAssets":
     "舞台文件引用了未在本工程登记的导入模型：{names}。请在原工程中打开，或先在此工程导入对应模型文件。",
   "editors.stage.ui.exportFailed": "预演视频导出失败。",

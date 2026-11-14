@@ -1,7 +1,7 @@
 /** Third-phase Director Stage acceptance: an animated GLB follows the stage
  * timeline into the same sampled MP4. Runs against the isolated fixture. */
 import assert from "node:assert/strict";
-import { makeAnimatedGlb } from "./director_stage_fixture.mjs";
+import { makeAnimatedGlb, makeUnnamedClipGlb } from "./director_stage_fixture.mjs";
 const { chromium } = await import(
   process.env.PLAYWRIGHT_MODULE ?? "playwright-core"
 );
@@ -120,6 +120,19 @@ try {
   const early = await viewport.screenshot();
   assert.ok(Buffer.compare(early, late) !== 0, "playhead scrub animates the imported model");
 
+  // An unnamed clip pins the animation_{index} fallback shared with the
+  // backend probe; the committed metadata must round-trip that exact name.
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "unnamed.glb",
+      mimeType: "model/gltf-binary",
+      buffer: makeUnnamedClipGlb(),
+    });
+  await page
+    .getByText("Imported unnamed · 1 animation clips", { exact: true })
+    .waitFor();
+
   await page
     .getByRole("button", { name: "Render preview MP4", exact: true })
     .click();
@@ -157,6 +170,11 @@ try {
     committed.assets.some((asset) => asset.id === imported.asset.assetId),
     "the animated model registers as a project asset",
   );
+  const unnamed = document.data.objects.find(
+    (object) => object.name === "unnamed",
+  );
+  assert.deepEqual(unnamed.animationNames, ["animation_0"]);
+  assert.equal(unnamed.hasAnimation, true);
 
   await page
     .getByRole("button", { name: "Apply edits", exact: true })
@@ -170,6 +188,7 @@ try {
       documentId: document.id,
       checks: [
         "animated GLB import discovers clips",
+        "unnamed clips keep the loader's animation_0 fallback",
         "motion clip binds the imported model",
         "playhead scrub animates the preview",
         "MP4 renders through the same sampling",
