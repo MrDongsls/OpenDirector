@@ -75,6 +75,7 @@ DIRECTOR_STAGE_LOCALE=zh-CN node tests/browser/director_stage_entry.mjs  # 同�
 node tests/browser/director_stage_animation.mjs # 动画 GLB 导入、播放头采样与 MP4 同源合成
 node tests/browser/director_stage_output.mjs   # 定格与 MP4 登记为工程资产并被时间线引用
 CREATION_DEVICE_SCALE_FACTOR=2 node tests/browser/director_stage_output.mjs  # 同一流程在高 DPI 下复验定格尺寸
+node tests/browser/director_stage_delivery.mjs # 被后端明确拒绝的存储投递只损失一次尝试，随后重规划恢复渲染与应用
 node tests/browser/reference_reconnect.mjs     # 参考连线删除后重连
 node tests/browser/context_menu_dismissal.mjs  # 右键菜单关闭
 node tests/browser/mp4_export.mjs              # 合成 MP4（WebCodecs + 软件 AAC）
