@@ -504,6 +504,9 @@ export function DirectorStage({
   const object = sampled.objects.find((item) => item.id === selected);
   const cameraValue = sampled.camera;
   const outputSize = stageOutputSize(stage.aspectRatio);
+  // The frame sits centered at a comfortable size (a 16:9 stage is 900px
+  // wide) and the timeline track, transport and storyboard match its width.
+  const stageStackWidth = `min(100%, calc(min(60vh, 506px) * ${outputSize.width / outputSize.height}))`;
   const frameTimes = stageFrameTimes(stage);
   const installHistory = (next: StageHistory) => {
     if (next === history.current) return;
@@ -1420,7 +1423,7 @@ export function DirectorStage({
         </>
       }
     >
-      <div>
+      <div className="cw-stage-shell">
         {renderProgress !== null && (
           <div className="cw-render-status" role="status">
             <progress value={renderProgress} max={1} />
@@ -1468,6 +1471,7 @@ export function DirectorStage({
         )}
         <fieldset className="cw-editor-work" disabled={renderProgress !== null}>
           <div className="cw-stage-layout">
+            <div className="cw-stage-main">
             <aside className="cw-stage-objects">
               <h3>{t("editors.stage.ui.sceneObjects")}</h3>
               <div className="cw-stage-add">
@@ -1546,11 +1550,11 @@ export function DirectorStage({
               </p>
             </aside>
             <section className="cw-stage-center">
+              <div className="cw-stage-stack" style={{ width: stageStackWidth }}>
               <div
                 className="cw-stage-viewport"
                 style={{
                   aspectRatio: `${outputSize.width} / ${outputSize.height}`,
-                  width: `min(100%, calc(min(55vh, 480px) * ${outputSize.width / outputSize.height}))`,
                 }}
                 ref={mount}
                 role="img"
@@ -1723,7 +1727,9 @@ export function DirectorStage({
                   </div>
                 ))}
               </section>
+              </div>
             </section>
+            </div>
             <aside className="cw-stage-inspector">
               <h3>
                 {object
@@ -2083,9 +2089,6 @@ export function DirectorStage({
               </button>
             </aside>
           </div>
-          <p className="cw-domain-note">
-            {t("editors.stage.ui.footerHint")}
-          </p>
           <input
             className="cw-domain-file-input"
             ref={importInput}
@@ -2111,6 +2114,9 @@ export function DirectorStage({
             }}
           />
         </fieldset>
+          <p className="cw-domain-note">
+            {t("editors.stage.ui.footerHint")}
+          </p>
       </div>
     </EditorModal>
   );
