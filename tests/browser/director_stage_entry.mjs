@@ -15,6 +15,13 @@ const L = {
     cameraName: "Camera name",
     playhead: "Stage playhead",
     positionX: "Position X",
+    currentTimeAria: "Stage current time",
+    addShot: "Add current camera at playhead",
+    copyCamera: "Duplicate as new camera",
+    editCamera: "Edit camera",
+    sourceAria: "Director shot source",
+    camera2: "Camera 2",
+    shot1Camera: "Shot 1 camera",
     recordKeyframe: "Record a keyframe here",
     closeEditor: "Close editor",
     undo: "Undo",
@@ -43,6 +50,13 @@ const L = {
     cameraName: "机位名称",
     playhead: "舞台播放位置",
     positionX: "位置 X",
+    currentTimeAria: "舞台当前时刻",
+    addShot: "在播放头添加当前机位",
+    copyCamera: "复制为新机位",
+    editCamera: "编辑机位",
+    sourceAria: "导演镜头来源",
+    camera2: "摄像机 2",
+    shot1Camera: "镜头 1 机位",
     recordKeyframe: "在此记录关键帧",
     closeEditor: "关闭编辑器",
     undo: "撤销",
@@ -244,6 +258,44 @@ try {
     .getByRole("button", { name: L.recordKeyframe, exact: true })
     .click();
   await page.getByRole("button", { name: "6.00s", exact: true }).waitFor();
+  // Numeric fields share one text→value contract: leading-zero and empty
+  // text never become values, and the current time is directly addressable,
+  // clamped to the stage duration at hundredth precision.
+  const positionX = page.getByLabel(L.positionX, { exact: true });
+  await positionX.fill("03");
+  await positionX.blur();
+  assert.equal(await positionX.inputValue(), "2");
+  await positionX.fill("");
+  await positionX.blur();
+  assert.equal(await positionX.inputValue(), "2");
+  const currentTime = page.getByLabel(L.currentTimeAria, { exact: true });
+  await currentTime.fill("999");
+  await currentTime.blur();
+  assert.equal(await currentTime.inputValue(), "6");
+  await currentTime.fill("1.234");
+  await currentTime.blur();
+  assert.equal(await currentTime.inputValue(), "1.23");
+  // Choosing or creating an edit-target camera must not flip storyboard-cut
+  // evaluation: the source stays on cuts, and the playhead shot is retargeted.
+  await page.getByRole("button", { name: L.addShot, exact: true }).click();
+  const source = page.getByLabel(L.sourceAria, { exact: true });
+  assert.equal(await source.inputValue(), "storyboard");
+  await page.getByRole("button", { name: L.copyCamera, exact: true }).click();
+  assert.equal(await source.inputValue(), "storyboard");
+  const editCamera = page.getByLabel(L.editCamera, { exact: true });
+  await editCamera.selectOption({ label: L.camera2 });
+  assert.equal(await source.inputValue(), "storyboard");
+  // The shot covering the playhead now evaluates through the chosen camera.
+  const shotCamera = page.getByLabel(L.shot1Camera, { exact: true });
+  assert.equal(
+    await shotCamera.inputValue(),
+    await editCamera.inputValue(),
+  );
+  // Switching the evaluation strategy stays an explicit choice, and the
+  // edit target follows it back to the renamed camera.
+  await source.selectOption("camera");
+  await editCamera.selectOption({ label: "Acceptance camera" });
+  assert.equal(await source.inputValue(), "camera");
   // An unlit import loads as materials without emissive; selecting across it
   // must not take down the editor. The tiny fixture parses in milliseconds,
   // so a short settle ensures the clone has landed before the selection runs.
@@ -387,6 +439,9 @@ try {
         "stage JSON export names imports that are not saved yet",
         "stage JSON import rejects foreign pinned assets",
         "binary model bytes through the JSON importer report a localized notice",
+        "numeric text never commits leading zeros or empty values",
+        "current time is directly addressable, clamped and quantized",
+        "camera selection keeps storyboard-cut evaluation and retargets the playhead shot",
         "imported asset identity survives undo, redo, and reopen",
         "keyframes persist and reopen",
         "undo preserves node and document identities",

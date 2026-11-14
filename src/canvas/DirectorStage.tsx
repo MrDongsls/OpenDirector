@@ -13,6 +13,7 @@ import {
   parseLocalStageValue,
   probeStageAsset,
   sampleStage,
+  stageCameraAt,
   editStageObjectAt,
   editStageCameraAt,
   captureStageFrame,
@@ -345,6 +346,68 @@ const focalLength = (fov: number) =>
 const fovFromFocal = (focal: number) =>
   THREE.MathUtils.radToDeg(2 * Math.atan(35 / (16 / 9) / (2 * focal)));
 
+/** Canonical decimal form: the only text that becomes a domain value. Leading
+ * zeros ("03"), trailing dots ("1."), exponents, and empty text never commit;
+ * clearing a field therefore cannot silently write 0. */
+const DECIMAL_TEXT = /^-?(0|[1-9]\d*)(\.\d+)?$/;
+function NumberField({
+  ariaLabel,
+  value,
+  min,
+  max,
+  decimals = 3,
+  quantize = false,
+  clamp = false,
+  onCommit,
+}: {
+  ariaLabel: string;
+  value: number;
+  min?: number;
+  max?: number;
+  /** Display precision; quantize also rounds committed values to it. */
+  decimals?: number;
+  quantize?: boolean;
+  /** Clamp out-of-range entries instead of refusing them until blur. */
+  clamp?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  // null = not editing; "" = editing with an empty field (no committed value).
+  const [draft, setDraft] = useState<string | null>(null);
+  const editing = draft !== null;
+  const canonical = String(Number(value.toFixed(decimals)));
+  const commit = (raw: number) => {
+    let next = quantize ? Math.round(raw * 10 ** decimals) / 10 ** decimals : raw;
+    if (clamp) {
+      if (min !== undefined) next = Math.max(min, next);
+      if (max !== undefined) next = Math.min(max, next);
+      onCommit(next);
+      return;
+    }
+    if (
+      Number.isFinite(next) &&
+      (min === undefined || next >= min) &&
+      (max === undefined || next <= max)
+    )
+      onCommit(next);
+  };
+  return (
+    <input
+      aria-label={ariaLabel}
+      type="text"
+      inputMode="decimal"
+      value={editing ? draft : canonical}
+      onChange={(event) => {
+        const text = event.target.value;
+        setDraft(text);
+        if (DECIMAL_TEXT.test(text)) commit(Number(text));
+      }}
+      onBlur={() => setDraft(null)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === "Escape") setDraft(null);
+      }}
+    />
+  );
+}
 function VectorFields({
   label,
   value,
@@ -368,25 +431,19 @@ function VectorFields({
       {axes.map((axis) => (
         <label key={axis}>
           {axis.toUpperCase()}
-          <input
-            aria-label={`${label} ${axis.toUpperCase()}`}
-            type="number"
-            step={rotation ? 5 : 0.1}
+          <NumberField
+            ariaLabel={`${label} ${axis.toUpperCase()}`}
             min={min}
-            value={Number(
-              (rotation
-                ? THREE.MathUtils.radToDeg(value[axis])
-                : value[axis]
-              ).toFixed(3),
-            )}
-            onChange={(event) => {
-              const raw = Number(event.target.value);
-              if (Number.isFinite(raw) && (min === undefined || raw >= min))
-                onChange({
-                  ...value,
-                  [axis]: rotation ? THREE.MathUtils.degToRad(raw) : raw,
-                });
-            }}
+            decimals={rotation ? 1 : 3}
+            value={
+              rotation ? THREE.MathUtils.radToDeg(value[axis]) : value[axis]
+            }
+            onCommit={(raw) =>
+              onChange({
+                ...value,
+                [axis]: rotation ? THREE.MathUtils.degToRad(raw) : raw,
+              })
+            }
           />
         </label>
       ))}
@@ -561,8 +618,9 @@ export function DirectorStage({
       const id = crypto.randomUUID();
       return {
         ...current,
+        // The duplicate becomes the edit target; camera management must not
+        // silently flip storyboard-cut evaluation back to a single camera.
         activeCameraId: id,
-        cameraSource: "camera",
         cameras: [
           ...current.cameras,
           {
@@ -1510,25 +1568,31 @@ export function DirectorStage({
                     ? t("editors.stage.ui.pause")
                     : t("editors.stage.ui.playAction")}
                 </button>
-                <output>
-                  {t("editors.stage.ui.time", {
-                    time: time.toFixed(2),
-                    duration: stage.duration.toFixed(2),
-                  })}
-                </output>
+                <label>
+                  {t("editors.stage.ui.currentTime")}
+                  <NumberField
+                    ariaLabel={t("editors.stage.ui.currentTimeAria")}
+                    value={time}
+                    min={0}
+                    max={stage.duration}
+                    decimals={2}
+                    quantize
+                    clamp
+                    onCommit={(next) => {
+                      setPlaying(false);
+                      setTime(next);
+                    }}
+                  />
+                </label>
                 <label>
                   {t("editors.stage.ui.totalDuration")}
-                  <input
-                    aria-label={t("editors.stage.ui.stageDurationAria")}
-                    type="number"
-                    min={0.1}
-                    step={0.5}
+                  <NumberField
+                    ariaLabel={t("editors.stage.ui.stageDurationAria")}
                     value={stage.duration}
-                    onChange={(event) =>
-                      edit((current) => ({
-                        ...current,
-                        duration: Number(event.target.value),
-                      }))
+                    min={0.1}
+                    decimals={2}
+                    onCommit={(duration) =>
+                      edit((current) => ({ ...current, duration }))
                     }
                   />
                 </label>
@@ -1606,35 +1670,27 @@ export function DirectorStage({
                     </label>
                     <label>
                       {t("editors.stage.ui.startSeconds")}
-                      <input
-                        aria-label={t("editors.stage.ui.shotStartAria", {
+                      <NumberField
+                        ariaLabel={t("editors.stage.ui.shotStartAria", {
                           number: index + 1,
                         })}
-                        type="number"
-                        min={0}
-                        step={0.1}
                         value={shot.start}
-                        onChange={(event) =>
-                          updateShot(shot.id, {
-                            start: Number(event.target.value),
-                          })
-                        }
+                        min={0}
+                        decimals={2}
+                        onCommit={(start) => updateShot(shot.id, { start })}
                       />
                     </label>
                     <label>
                       {t("editors.stage.ui.durationSeconds")}
-                      <input
-                        aria-label={t("editors.stage.ui.shotDurationAria", {
+                      <NumberField
+                        ariaLabel={t("editors.stage.ui.shotDurationAria", {
                           number: index + 1,
                         })}
-                        type="number"
-                        min={0.1}
-                        step={0.1}
                         value={shot.duration}
-                        onChange={(event) =>
-                          updateShot(shot.id, {
-                            duration: Number(event.target.value),
-                          })
+                        min={0.1}
+                        decimals={2}
+                        onCommit={(duration) =>
+                          updateShot(shot.id, { duration })
                         }
                       />
                     </label>
@@ -1755,57 +1811,47 @@ export function DirectorStage({
                           </label>
                           <label>
                             {t("editors.stage.ui.startSeconds")}
-                            <input
-                              aria-label={t(
+                            <NumberField
+                              ariaLabel={t(
                                 "editors.stage.ui.motionStartAria",
                                 { number: index + 1 },
                               )}
-                              type="number"
-                              min={0}
-                              step={0.1}
                               value={clip.start}
-                              onChange={(event) =>
-                                updateClip(clip.id, {
-                                  start: Number(event.target.value),
-                                })
+                              min={0}
+                              decimals={2}
+                              onCommit={(start) =>
+                                updateClip(clip.id, { start })
                               }
                             />
                           </label>
                           <label>
                             {t("editors.stage.ui.durationSeconds")}
-                            <input
-                              aria-label={t(
+                            <NumberField
+                              ariaLabel={t(
                                 "editors.stage.ui.motionDurationAria",
                                 { number: index + 1 },
                               )}
-                              type="number"
-                              min={0.1}
-                              step={0.1}
                               value={clip.duration}
-                              onChange={(event) =>
-                                updateClip(clip.id, {
-                                  duration: Number(event.target.value),
-                                })
+                              min={0.1}
+                              decimals={2}
+                              onCommit={(duration) =>
+                                updateClip(clip.id, { duration })
                               }
                             />
                           </label>
                           <label>
                             {t("editors.stage.ui.speed")}
-                            <input
-                              aria-label={t(
+                            <NumberField
+                              ariaLabel={t(
                                 "editors.stage.ui.motionSpeedAria",
                                 { number: index + 1 },
                               )}
-                              type="number"
-                              min={0.1}
-                              step={0.1}
                               value={clip.motion.speed}
-                              onChange={(event) =>
+                              min={0.1}
+                              decimals={2}
+                              onCommit={(speed) =>
                                 updateClip(clip.id, {
-                                  motion: {
-                                    ...clip.motion,
-                                    speed: Number(event.target.value),
-                                  },
+                                  motion: { ...clip.motion, speed },
                                 })
                               }
                             />
@@ -1892,11 +1938,21 @@ export function DirectorStage({
                   aria-label={t("editors.stage.ui.editCamera")}
                   value={sampled.cameraId}
                   onChange={(event) =>
-                    edit((current) => ({
-                      ...current,
-                      activeCameraId: event.target.value,
-                      cameraSource: "camera",
-                    }))
+                    edit((current) => {
+                      const cameraId = event.target.value;
+                      // Retarget the camera that evaluates at the playhead;
+                      // choosing an edit target must not flip the evaluation
+                      // strategy between the active camera and storyboard cuts.
+                      const { shot } = stageCameraAt(current, timeRef.current);
+                      return shot
+                        ? {
+                            ...current,
+                            shots: current.shots.map((item) =>
+                              item.id === shot.id ? { ...item, cameraId } : item,
+                            ),
+                          }
+                        : { ...current, activeCameraId: cameraId };
+                    })
                   }
                 >
                   {stage.cameras.map((camera) => (
@@ -1994,15 +2050,12 @@ export function DirectorStage({
               />
               <label className="cw-domain-field">
                 {t("editors.stage.ui.focal")}
-                <input
-                  type="number"
+                <NumberField
+                  ariaLabel={t("editors.stage.ui.focal")}
+                  value={focalLength(cameraValue.fov)}
                   min={1}
-                  step={1}
-                  value={Number(focalLength(cameraValue.fov).toFixed(1))}
-                  onChange={(event) => {
-                    const focal = Number(event.target.value);
-                    if (focal > 0) editCamera({ fov: fovFromFocal(focal) });
-                  }}
+                  decimals={1}
+                  onCommit={(focal) => editCamera({ fov: fovFromFocal(focal) })}
                 />
               </label>
               <label className="cw-domain-field">
