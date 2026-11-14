@@ -23,6 +23,13 @@ def glb_bytes(document, binary=b''):
     return struct.pack('<4sII', b'glTF', 2, 12 + len(body)) + body
 
 
+def glb_bytes_of_raw(payload):
+    """A GLB container whose JSON chunk is the literal bytes, unparsed."""
+    padded = payload + b' ' * (-len(payload) % 4)
+    body = struct.pack('<I4s', len(padded), b'JSON') + padded
+    return struct.pack('<4sII', b'glTF', 2, 12 + len(body)) + body
+
+
 def asset(kind='file'):
     from opendirector.domain.creation.assets import AssetRef
 
@@ -291,3 +298,25 @@ def test_oversized_stage_models_are_rejected_before_parsing(tmp_path):
     # Oversized JSON without a model suffix stays a generic file, not a stage error.
     info = upload('data.json', b'{"payload":' + b' ' * oversized)
     assert info.kind == 'file' and info.metadata.mimeType == 'application/octet-stream'
+
+
+def test_deeply_nested_model_json_stays_a_generic_file(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    # Deep nesting makes the C parser raise RecursionError, not ValueError;
+    # uploads must fail closed as generic files instead of raising.
+    nested = b'[' * 5000 + b']' * 5000
+    info = upload('scene.gltf', nested)
+    assert info.kind == 'file' and info.metadata.mimeType == 'application/octet-stream'
+    info = upload('prop.glb', glb_bytes_of_raw(nested))
+    assert info.kind == 'file' and info.metadata.mimeType == 'model/gltf-binary'
+    assert info.metadata.selfContained is False
+
+
+def test_model_json_head_behind_long_whitespace_prefix_is_still_a_model(tmp_path):
+    projects, pid, send, upload = stage_project(tmp_path)
+    # A browser JSON.parse accepts any leading whitespace, so classification
+    # must not stop at the 4096-byte probe window.
+    scene = b' ' * 8192 + json.dumps(dict(asset=dict(version='2.0'), animations=[dict(name='Idle')])).encode('utf-8')
+    info = upload('scene', scene)
+    assert info.kind == 'file' and info.metadata.mimeType == 'model/gltf+json'
+    assert info.metadata.selfContained is True and info.metadata.animationNames == ('Idle',)

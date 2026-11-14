@@ -1,7 +1,7 @@
 /** Second-phase Director Stage acceptance: create, import GLB, edit, reopen, undo, and redo.
  * DIRECTOR_STAGE_LOCALE runs the same flow in another UI language (default en-US). */
 import assert from "node:assert/strict";
-import { makeGlb } from "./director_stage_fixture.mjs";
+import { makeCorruptGlb, makeGlb, makeUnlitGlb } from "./director_stage_fixture.mjs";
 const { chromium } = await import(
   process.env.PLAYWRIGHT_MODULE ?? "playwright-core"
 );
@@ -27,6 +27,14 @@ const L = {
       "Could not load “broken.glb”. The file may be corrupt or reference external resources.",
     unsupportedAssetNotice:
       "Only GLB and self-contained GLTF files are supported. FBX and external GLTF resources are not supported yet.",
+    compressedAssetNotice:
+      "Compressed models (Draco, meshopt, or KTX2) are not supported yet. Export the model uncompressed and import it again.",
+    exportUnsavedImportsNotice:
+      "The stage file cannot carry imported models that exist only in this browser: acceptance. Apply edits to save them to the project first.",
+    importForeignAssetsNotice:
+      "The stage file pins imported models that are not registered in this project: Foreign actor. Open the stage in its original project, or import the model files here first.",
+    importNotJsonNotice:
+      "The selected file is not a stage JSON document. Model files are imported with “Import GLB / GLTF”.",
   },
   "zh-CN": {
     saved: "已保存到本机",
@@ -46,6 +54,14 @@ const L = {
       "无法加载「broken.glb」。文件可能损坏，或引用了外部资源。",
     unsupportedAssetNotice:
       "目前仅支持 GLB 和自包含 GLTF；FBX 及外部 GLTF 资源暂不支持。",
+    compressedAssetNotice:
+      "暂不支持压缩模型（Draco、meshopt 或 KTX2）。请先导出未压缩的模型，再重新导入。",
+    exportUnsavedImportsNotice:
+      "舞台文件无法携带仅存在于当前浏览器的导入模型：acceptance。请先应用编辑，将其保存为工程素材。",
+    importForeignAssetsNotice:
+      "舞台文件引用了未在本工程登记的导入模型：Foreign actor。请在原工程中打开，或先在此工程导入对应模型文件。",
+    importNotJsonNotice:
+      "所选文件不是舞台 JSON 文档。模型文件请使用「导入 GLB / GLTF」导入。",
   },
 }[locale];
 assert.ok(L, `Unsupported DIRECTOR_STAGE_LOCALE: ${locale}`);
@@ -194,6 +210,19 @@ try {
       buffer: makeGlb({ images: [{ uri: "texture.png" }] }),
     });
   await page.getByText(L.unsupportedAssetNotice, { exact: true }).waitFor();
+  // Self-contained but Draco-compressed: rejected for needing unavailable
+  // decoders, not mislabeled as corrupt.
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "draco.glb",
+      mimeType: "model/gltf-binary",
+      buffer: makeGlb({
+        extensionsUsed: ["KHR_draco_mesh_compression"],
+        extensionsRequired: ["KHR_draco_mesh_compression"],
+      }),
+    });
+  await page.getByText(L.compressedAssetNotice, { exact: true }).waitFor();
   await page
     .locator('input[type="file"][accept*=".glb"]')
     .setInputFiles({
@@ -215,6 +244,26 @@ try {
     .getByRole("button", { name: L.recordKeyframe, exact: true })
     .click();
   await page.getByRole("button", { name: "6.00s", exact: true }).waitFor();
+  // An unlit import loads as materials without emissive; selecting across it
+  // must not take down the editor. The tiny fixture parses in milliseconds,
+  // so a short settle ensures the clone has landed before the selection runs.
+  await page
+    .locator('input[type="file"][accept*=".glb"]')
+    .setInputFiles({
+      name: "unlit.glb",
+      mimeType: "model/gltf-binary",
+      buffer: makeUnlitGlb(),
+    });
+  await page
+    .getByRole("button", { name: "unlit", exact: true })
+    .waitFor();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "acceptance", exact: true }).click();
+  await page.getByRole("button", { name: "unlit", exact: true }).click();
+  assert.equal(
+    await page.getByRole("button", { name: "unlit", exact: true }).isVisible(),
+    true,
+  );
   await page.getByRole("button", { name: L.apply, exact: true }).click();
 
   const committed = await until((snapshot) => {
@@ -275,7 +324,12 @@ try {
   );
 
   const redo = page.getByLabel(L.redo, { exact: true });
-  assert.equal(await redo.isEnabled(), true);
+  // Saving is async, so redo may lag the undo click; wait instead of asserting.
+  const redoDeadline = Date.now() + 20000;
+  while (!(await redo.isEnabled())) {
+    if (Date.now() > redoDeadline) throw new Error("redo never became enabled");
+    await page.waitForTimeout(100);
+  }
   await redo.click();
   const redone = await until((snapshot) => {
     const result = director(snapshot, itemId);
@@ -326,7 +380,13 @@ try {
         "shared creation toolbar entry",
         "automatic editor opening",
         "external node projects to director document",
+        "corrupt GLB JSON is reported as corruption, not a load failure",
+        "compressed models are rejected for needing unavailable decoders",
         "GLB import previews before save and registers a file asset",
+        "unlit imports survive selection without crashing",
+        "stage JSON export names imports that are not saved yet",
+        "stage JSON import rejects foreign pinned assets",
+        "binary model bytes through the JSON importer report a localized notice",
         "imported asset identity survives undo, redo, and reopen",
         "keyframes persist and reopen",
         "undo preserves node and document identities",

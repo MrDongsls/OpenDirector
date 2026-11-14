@@ -83,7 +83,9 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
             raise ProjectError('文件包含非文本内容，请导入 UTF-8 文本。')
         return 'text', MediaMetadata(size=size, mimeType='text/markdown' if suffix == '.md' else 'text/plain')
     with path.open('rb') as stream:
-        prefix = stream.read(16)
+        # Image and container magic detection needs only the first 12 bytes;
+        # glTF JSON heads behind longer whitespace are streamed below.
+        prefix = stream.read(4096)
     image_bytes = (prefix.startswith((b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff', b'GIF87a', b'GIF89a'))
                    or prefix.startswith(b'RIFF') and prefix[8:12] == b'WEBP')
     if suffix in {'.png', '.jpg', '.jpeg', '.gif', '.webp'} or image_bytes or expected_kind == 'image':
@@ -133,7 +135,7 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
                         break
             try:
                 parsed = json.loads(document) if document is not None else None
-            except ValueError:
+            except (ValueError, RecursionError):
                 parsed = None
             self_contained = (isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict)
                               and 'version' in parsed['asset'] and not _has_external_gltf_resources(parsed))
@@ -142,10 +144,21 @@ def inspect_file(path: Path, name: str, *, expected_kind=None):
     # Stage models are probed as whole JSON documents, so oversized files are
     # rejected up front instead of being fully loaded into memory; oversized
     # JSON without a .gltf suffix stays a generic file.
-    if size <= MAX_STAGE_MODEL_BYTES and (prefix.lstrip()[:1] == b'{' or suffix == '.gltf'):
+    # A JSON head may sit behind any amount of leading whitespace, matching
+    # what a browser JSON.parse accepts; only files small enough to be stage
+    # models are worth scanning.
+    json_head = prefix.lstrip()[:1] == b'{'
+    if not json_head and not prefix.strip() and size <= MAX_STAGE_MODEL_BYTES:
+        with path.open('rb') as stream:
+            while chunk := stream.read(4096):
+                stripped = chunk.lstrip()
+                if stripped:
+                    json_head = stripped[:1] == b'{'
+                    break
+    if size <= MAX_STAGE_MODEL_BYTES and (json_head or suffix == '.gltf'):
         try:
             parsed = json.loads(path.read_text(encoding='utf-8-sig'))
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             parsed = None
         if isinstance(parsed, dict) and isinstance(parsed.get('asset'), dict) and 'version' in parsed['asset']:
             return 'file', MediaMetadata(size=size, mimeType='model/gltf+json',
