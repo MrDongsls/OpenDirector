@@ -8,6 +8,7 @@ import {
   sameLocalStage,
   sampleStage,
   sampleStageCamera,
+  stageCameraAt,
   editStageObjectAt,
   editStageCameraAt,
   captureStageFrame,
@@ -349,6 +350,37 @@ test("storyboard hard cuts use independent camera animation, hold the last frame
     sameLocalStage(stage, { ...reloaded, cameraSource: "camera" }),
     false,
   );
+});
+
+test("stageCameraAt resolves the evaluating shot for retargeting without flipping the source", () => {
+  const stage = createLocalStage();
+  stage.cameras.push({
+    id: "b",
+    name: "反打",
+    pose: { ...defaultStageCamera(), position: { x: -5, y: 3.5, z: 7 } },
+    keyframes: [],
+  });
+  stage.cameraSource = "storyboard";
+  stage.shots = [{ id: "first", cameraId: "b", start: 2, duration: 4 }];
+  const inside = stageCameraAt(stage, 3.5);
+  assert.equal(inside.cameraId, "b");
+  assert.equal(inside.shot?.id, "first");
+  // Half-open boundaries: the start belongs to the shot, and the last
+  // instant of the timeline closes a shot ending exactly at the duration.
+  assert.equal(stageCameraAt(stage, 2).shot?.id, "first");
+  assert.equal(stageCameraAt(stage, 6).shot?.id, "first");
+  assert.equal(stageCameraAt(stage, 6).cameraId, "b");
+  // Gaps fall back to the active camera with no shot to retarget.
+  const gap = stageCameraAt(stage, 0);
+  assert.equal(gap.cameraId, "camera-1");
+  assert.equal(gap.shot, undefined);
+  // Single-camera mode ignores shots entirely.
+  const single = stageCameraAt({ ...stage, cameraSource: "camera" }, 3.5);
+  assert.equal(single.cameraId, "camera-1");
+  assert.equal(single.shot, undefined);
+  // Clamping mirrors the sampler for out-of-range queries.
+  assert.equal(stageCameraAt(stage, -1).cameraId, "camera-1");
+  assert.equal(stageCameraAt(stage, 99).shot?.id, "first");
 });
 
 test("camera and storyboard persistence rejects dangling IDs, duplicate camera IDs and overlapping cuts", () => {

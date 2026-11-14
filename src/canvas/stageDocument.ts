@@ -725,11 +725,12 @@ export function sampleStageCamera(
     fov: lerp(a.fov, b.fov, t),
   }));
 }
-/** Same global timeline and half-open cut boundaries for editor, screenshots and MP4. */
-export function sampleStage(
+/** The shot whose camera evaluates at a time, or the gap fallback. Half-open
+ * cut boundaries match the sampler shared by editor, screenshots and MP4. */
+export function stageCameraAt(
   stage: LocalStageDocument,
   time: number,
-): StageSample {
+): { cameraId: string; shot?: StageShot } {
   const at = Math.max(0, Math.min(stage.duration, time));
   const shot =
     stage.cameraSource === "storyboard"
@@ -740,7 +741,15 @@ export function sampleStage(
               (at === stage.duration && at === s.start + s.duration)),
         )
       : undefined;
-  const cameraId = shot?.cameraId ?? stage.activeCameraId;
+  return { cameraId: shot?.cameraId ?? stage.activeCameraId, shot };
+}
+/** Same global timeline and half-open cut boundaries for editor, screenshots and MP4. */
+export function sampleStage(
+  stage: LocalStageDocument,
+  time: number,
+): StageSample {
+  const at = Math.max(0, Math.min(stage.duration, time));
+  const cameraId = stageCameraAt(stage, at).cameraId;
   return {
     cameraId,
     camera: sampleStageCamera(stage, cameraId, at),
