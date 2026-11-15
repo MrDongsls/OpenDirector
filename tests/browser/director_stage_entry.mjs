@@ -182,7 +182,9 @@ try {
   );
 
   // Applying saves and closes the stage editor in one step.
-  const undo = page.getByRole("button", { name: L.undo, exact: true });
+  // The toolbar undo carries an aria-label; the stage modal's undo is plain
+  // text, so a role lookup matches both while the editor is closing.
+  const undo = page.getByLabel(L.undo, { exact: true });
   await undo.waitFor();
   assert.equal(await undo.isEnabled(), true);
   await undo.click();
@@ -197,8 +199,12 @@ try {
   }, "undo restores the original director document without changing identity");
   assert.equal(director(undone, itemId).document.data.objects[0].id, objectId);
 
-  const redo = page.getByRole("button", { name: L.redo, exact: true });
-  assert.equal(await redo.isEnabled(), true);
+  const redo = page.getByLabel(L.redo, { exact: true });
+  const redoDeadline = Date.now() + 20000;
+  while (!(await redo.isEnabled())) {
+    if (Date.now() > redoDeadline) throw new Error("redo never became enabled");
+    await page.waitForTimeout(100);
+  }
   await redo.click();
   const redone = await until((snapshot) => {
     const result = director(snapshot, itemId);
