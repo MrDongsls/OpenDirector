@@ -198,7 +198,7 @@
     {
       "file": "director_stage_entry.mjs",
       "lanes": [
-        "manual"
+        "gate"
       ],
       "note": "Second-phase Director Stage acceptance: create, import GLB, edit, reopen, undo and redo. DIRECTOR_STAGE_LOCALE reruns the flow in another UI language."
     },
