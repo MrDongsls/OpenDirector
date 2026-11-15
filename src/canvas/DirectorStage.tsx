@@ -1392,7 +1392,20 @@ export function DirectorStage({
             {t("editors.stage.ui.importJson")}
           </button>
           <button
-            onClick={() =>
+            onClick={() => {
+              // Exports carry no model bytes: an import that exists only as a
+              // browser URL would become an unopenable object, so name it.
+              const unsaved = stageRef.current.objects.filter(
+                (object) => object.kind === "gltf" && !object.asset,
+              );
+              if (unsaved.length) {
+                setError(
+                  t("editors.stage.ui.exportUnsavedImports", {
+                    names: unsaved.map((object) => object.name).join(", "),
+                  }),
+                );
+                return;
+              }
               download(
                 JSON.stringify(
                   {
@@ -1406,8 +1419,8 @@ export function DirectorStage({
                 ),
                 `${node.data.title || "director-stage"}.stage.json`,
                 "application/json",
-              )
-            }
+              );
+            }}
           >
             {t("editors.stage.ui.exportJson")}
           </button>
