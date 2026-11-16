@@ -23569,9 +23569,7 @@
           "frameRate",
           "hasAudio",
           "sampleRate",
-          "channels",
-          "selfContained",
-          "animationNames"
+          "channels"
         ],
         "title": "MediaMetadata",
         "type": "object"
