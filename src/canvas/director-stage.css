@@ -40,11 +40,59 @@
   margin: 0;
   font-size: 15px;
 }
+.cw-stage-dialog .cw-domain-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.cw-stage-dialog .cw-domain-body > fieldset.cw-editor-work {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border: none;
+  padding: 0 14px 10px;
+}
 .cw-stage-layout {
   display: grid;
-  grid-template-columns: 190px minmax(300px, 1fr) 240px;
-  gap: 18px;
-  min-height: 480px;
+  grid-template-columns: 210px minmax(0, 1fr) 270px;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+.cw-stage-objects,
+.cw-stage-inspector {
+  overflow-y: auto;
+  min-height: 0;
+}
+.cw-stage-center {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+.cw-stage-viewport {
+  position: absolute;
+  inset: 0;
+  border: 1px solid #2e2740;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d0a14;
+}
+.cw-stage-viewport canvas {
+  display: block;
+}
+.cw-stage-timeline {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #322a44;
+  max-height: 220px;
+  overflow-y: auto;
 }
 .cw-stage-objects,
 .cw-stage-inspector {

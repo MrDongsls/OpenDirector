@@ -693,11 +693,13 @@ export function DirectorStage({
     runtime.current = current;
     setCamera(current, sampleStage(stageRef.current, timeRef.current).camera);
     const resize = () => {
-      const width = container.clientWidth;
-      if (!width) return;
-      const size = stageOutputSize(stageRef.current.aspectRatio);
-      renderer.setSize(width, (width * size.height) / size.width, false);
-      camera.aspect = size.width / size.height;
+      // The viewport fills its panel; the stage aspect shows up in the
+      // captured still and the MP4, not in the free-form preview frame.
+      const width = container.clientWidth,
+        height = container.clientHeight;
+      if (!width || !height) return;
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
     };
     const observer = new ResizeObserver(resize);
@@ -1728,288 +1730,10 @@ export function DirectorStage({
             <section className="cw-stage-center">
               <div
                 className="cw-stage-viewport"
-                style={{
-                  aspectRatio: `${outputSize.width} / ${outputSize.height}`,
-                  width: `min(100%, calc(min(55vh, 480px) * ${outputSize.width / outputSize.height}))`,
-                }}
                 ref={mount}
                 role="img"
                 aria-label={t("editors.stage.ui.stageAria")}
               />
-              {drawerOpen && (
-                <section
-                  className="cw-stage-drawer"
-                  aria-label={t("editors.stage.ui.shotMaterials")}
-                >
-                  <header className="cw-stage-drawer-head">
-                    <h4>{t("editors.stage.ui.shotMaterials")}</h4>
-                    <span className="cw-stage-drawer-count">{stills.length}</span>
-                    <button
-                      aria-label={t("editors.stage.ui.closeDrawer")}
-                      onClick={() => setDrawerOpen(false)}
-                    >
-                      ×
-                    </button>
-                  </header>
-                  <div className="cw-stage-drawer-toolbar">
-                    <label>
-                      <input
-                        type="checkbox"
-                        disabled={!stills.length}
-                        checked={
-                          !!stills.length &&
-                          selectedStills.size === stills.length
-                        }
-                        onChange={(event) =>
-                          setSelectedStills(
-                            event.target.checked
-                              ? new Set(stills.map((item) => item.id))
-                              : new Set(),
-                          )
-                        }
-                      />
-                      {t("editors.stage.ui.selectAllStills")}
-                    </label>
-                    <span>
-                      {t("editors.stage.ui.selectedStillsCount", {
-                        count: selectedStills.size,
-                      })}
-                    </span>
-                  </div>
-                  <ul className="cw-stage-drawer-list">
-                    {stills.map((item, index) => {
-                      const src = item.capture ?? item.src;
-                      return (
-                        <li key={item.id}>
-                          <div className="cw-stage-drawer-item">
-                            <input
-                              type="checkbox"
-                              checked={selectedStills.has(item.id)}
-                              onChange={() => toggleStill(item.id)}
-                              aria-label={stillName(index)}
-                            />
-                            <button
-                              className="cw-stage-drawer-preview"
-                              onClick={() => setPreviewStillId(item.id)}
-                              disabled={!src}
-                              aria-label={t("editors.stage.ui.previewStill", {
-                                name: stillName(index),
-                              })}
-                            >
-                              {src ? (
-                                <img src={src} alt="" />
-                              ) : (
-                                <span className="cw-stage-drawer-missing">
-                                  {t("editors.stage.ui.stillMissing")}
-                                </span>
-                              )}
-                              <span className="cw-stage-drawer-caption">
-                                <span>{stillName(index)}</span>
-                                <span>{stage.aspectRatio}</span>
-                              </span>
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                    {!stills.length && (
-                      <li className="cw-stage-drawer-empty">
-                        {t("editors.stage.ui.stillEmpty")}
-                      </li>
-                    )}
-                  </ul>
-                  <footer className="cw-stage-drawer-actions">
-                    <button
-                      disabled={!selectedStills.size}
-                      onClick={deleteSelectedStills}
-                    >
-                      {t("editors.stage.ui.deleteSelectedStills")}
-                    </button>
-                    <button
-                      disabled={!selectedStills.size}
-                      onClick={() => void downloadSelectedStills()}
-                    >
-                      {t("editors.stage.ui.downloadSelectedStills")}
-                    </button>
-                    <button
-                      className="cw-stage-drawer-primary"
-                      disabled={!selectedStills.size}
-                      onClick={() => void addSelectedStillsToCanvas()}
-                    >
-                      {t("editors.stage.ui.addStillsToCanvas")}
-                    </button>
-                  </footer>
-                </section>
-              )}
-              <div className="cw-stage-transport">
-                <button
-                  disabled={!ready}
-                  onClick={() => {
-                    if (time >= stage.duration) setTime(0);
-                    setPlaying((current) => !current);
-                  }}
-                >
-                  {playing
-                    ? t("editors.stage.ui.pause")
-                    : t("editors.stage.ui.playAction")}
-                </button>
-                <output>
-                  {t("editors.stage.ui.time", {
-                    time: time.toFixed(2),
-                    duration: stage.duration.toFixed(2),
-                  })}
-                </output>
-                <label>
-                  {t("editors.stage.ui.totalDuration")}
-                  <input
-                    aria-label={t("editors.stage.ui.stageDurationAria")}
-                    type="number"
-                    min={0.1}
-                    step={0.5}
-                    value={stage.duration}
-                    onChange={(event) =>
-                      edit((current) => ({
-                        ...current,
-                        duration: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </label>
-                <button onClick={captureKeyframe} disabled={!ready}>
-                  {t("editors.stage.ui.recordKeyframe")}
-                </button>
-              </div>
-              <ControlSlider
-                aria-label={t("editors.stage.ui.playheadAria")}
-                min={0}
-                max={stage.duration}
-                step={0.01}
-                value={Math.min(time, stage.duration)}
-                onChange={(event) => {
-                  setPlaying(false);
-                  setTime(Number(event.target.value));
-                }}
-              />
-              <div className="cw-stage-keyframes">
-                {frameTimes.map((frame) => (
-                  <div key={frame}>
-                    <button
-                      onClick={() => {
-                        setPlaying(false);
-                        setTime(frame);
-                      }}
-                    >
-                      {frame.toFixed(2)}s
-                    </button>
-                    <button
-                      aria-label={t("editors.stage.ui.deleteKeyframe", {
-                        frame,
-                      })}
-                      onClick={() =>
-                        edit((current) => removeStageFrame(current, frame))
-                      }
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                {!frameTimes.length && (
-                  <p>
-                    {t("editors.stage.ui.keyframeHint")}
-                  </p>
-                )}
-              </div>
-              <section className="cw-stage-storyboard">
-                <h3>{t("editors.stage.ui.storyboard")}</h3>
-                <button onClick={addShot}>
-                  {t("editors.stage.ui.addShot")}
-                </button>
-                <p className="cw-domain-note">
-                  {t("editors.stage.ui.shotHint")}
-                </p>
-                {stage.shots.map((shot, index) => (
-                  <div className="cw-stage-shot" key={shot.id}>
-                    <label>
-                      {t("editors.stage.ui.shot", { number: index + 1 })}
-                      <select
-                        aria-label={t("editors.stage.ui.shotCameraAria", {
-                          number: index + 1,
-                        })}
-                        value={shot.cameraId}
-                        onChange={(event) =>
-                          updateShot(shot.id, { cameraId: event.target.value })
-                        }
-                      >
-                        {stage.cameras.map((camera) => (
-                          <option key={camera.id} value={camera.id}>
-                            {camera.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      {t("editors.stage.ui.startSeconds")}
-                      <input
-                        aria-label={t("editors.stage.ui.shotStartAria", {
-                          number: index + 1,
-                        })}
-                        type="number"
-                        min={0}
-                        step={0.1}
-                        value={shot.start}
-                        onChange={(event) =>
-                          updateShot(shot.id, {
-                            start: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      {t("editors.stage.ui.durationSeconds")}
-                      <input
-                        aria-label={t("editors.stage.ui.shotDurationAria", {
-                          number: index + 1,
-                        })}
-                        type="number"
-                        min={0.1}
-                        step={0.1}
-                        value={shot.duration}
-                        onChange={(event) =>
-                          updateShot(shot.id, {
-                            duration: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <button
-                      onClick={() => {
-                        setPlaying(false);
-                        setTime(shot.start);
-                        edit((current) => ({
-                          ...current,
-                          cameraSource: "storyboard",
-                        }));
-                      }}
-                    >
-                      {t("editors.stage.ui.locate")}
-                    </button>
-                    <button
-                      onClick={() =>
-                        edit((current) => ({
-                          ...current,
-                          shots: current.shots.filter(
-                            (item) => item.id !== shot.id,
-                          ),
-                        }))
-                      }
-                    >
-                      {t("editors.stage.ui.deleteShot", {
-                        number: index + 1,
-                      })}
-                    </button>
-                  </div>
-                ))}
-              </section>
             </section>
             <aside className="cw-stage-inspector">
               <h3>
@@ -2375,6 +2099,177 @@ export function DirectorStage({
               </button>
             </aside>
           </div>
+          <section className="cw-stage-timeline">
+          <div className="cw-stage-transport">
+            <button
+              disabled={!ready}
+              onClick={() => {
+                if (time >= stage.duration) setTime(0);
+                setPlaying((current) => !current);
+              }}
+            >
+              {playing
+                ? t("editors.stage.ui.pause")
+                : t("editors.stage.ui.playAction")}
+            </button>
+            <output>
+              {t("editors.stage.ui.time", {
+                time: time.toFixed(2),
+                duration: stage.duration.toFixed(2),
+              })}
+            </output>
+            <label>
+              {t("editors.stage.ui.totalDuration")}
+              <input
+                aria-label={t("editors.stage.ui.stageDurationAria")}
+                type="number"
+                min={0.1}
+                step={0.5}
+                value={stage.duration}
+                onChange={(event) =>
+                  edit((current) => ({
+                    ...current,
+                    duration: Number(event.target.value),
+                  }))
+                }
+              />
+            </label>
+            <button onClick={captureKeyframe} disabled={!ready}>
+              {t("editors.stage.ui.recordKeyframe")}
+            </button>
+          </div>
+          <ControlSlider
+            aria-label={t("editors.stage.ui.playheadAria")}
+            min={0}
+            max={stage.duration}
+            step={0.01}
+            value={Math.min(time, stage.duration)}
+            onChange={(event) => {
+              setPlaying(false);
+              setTime(Number(event.target.value));
+            }}
+          />
+          <div className="cw-stage-keyframes">
+            {frameTimes.map((frame) => (
+              <div key={frame}>
+                <button
+                  onClick={() => {
+                    setPlaying(false);
+                    setTime(frame);
+                  }}
+                >
+                  {frame.toFixed(2)}s
+                </button>
+                <button
+                  aria-label={t("editors.stage.ui.deleteKeyframe", {
+                    frame,
+                  })}
+                  onClick={() =>
+                    edit((current) => removeStageFrame(current, frame))
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {!frameTimes.length && (
+              <p>
+                {t("editors.stage.ui.keyframeHint")}
+              </p>
+            )}
+          </div>
+          <section className="cw-stage-storyboard">
+            <h3>{t("editors.stage.ui.storyboard")}</h3>
+            <button onClick={addShot}>
+              {t("editors.stage.ui.addShot")}
+            </button>
+            <p className="cw-domain-note">
+              {t("editors.stage.ui.shotHint")}
+            </p>
+            {stage.shots.map((shot, index) => (
+              <div className="cw-stage-shot" key={shot.id}>
+                <label>
+                  {t("editors.stage.ui.shot", { number: index + 1 })}
+                  <select
+                    aria-label={t("editors.stage.ui.shotCameraAria", {
+                      number: index + 1,
+                    })}
+                    value={shot.cameraId}
+                    onChange={(event) =>
+                      updateShot(shot.id, { cameraId: event.target.value })
+                    }
+                  >
+                    {stage.cameras.map((camera) => (
+                      <option key={camera.id} value={camera.id}>
+                        {camera.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  {t("editors.stage.ui.startSeconds")}
+                  <input
+                    aria-label={t("editors.stage.ui.shotStartAria", {
+                      number: index + 1,
+                    })}
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={shot.start}
+                    onChange={(event) =>
+                      updateShot(shot.id, {
+                        start: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  {t("editors.stage.ui.durationSeconds")}
+                  <input
+                    aria-label={t("editors.stage.ui.shotDurationAria", {
+                      number: index + 1,
+                    })}
+                    type="number"
+                    min={0.1}
+                    step={0.1}
+                    value={shot.duration}
+                    onChange={(event) =>
+                      updateShot(shot.id, {
+                        duration: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <button
+                  onClick={() => {
+                    setPlaying(false);
+                    setTime(shot.start);
+                    edit((current) => ({
+                      ...current,
+                      cameraSource: "storyboard",
+                    }));
+                  }}
+                >
+                  {t("editors.stage.ui.locate")}
+                </button>
+                <button
+                  onClick={() =>
+                    edit((current) => ({
+                      ...current,
+                      shots: current.shots.filter(
+                        (item) => item.id !== shot.id,
+                      ),
+                    }))
+                  }
+                >
+                  {t("editors.stage.ui.deleteShot", {
+                    number: index + 1,
+                  })}
+                </button>
+              </div>
+            ))}
+          </section>
+          </section>
           <p className="cw-domain-note">
             {t("editors.stage.ui.footerHint")}
           </p>
