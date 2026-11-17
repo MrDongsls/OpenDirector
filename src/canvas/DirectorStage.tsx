@@ -1,5 +1,5 @@
 import { useEditorCommit, type EditorApplyResult } from "./useEditorCommit";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -46,7 +46,6 @@ import {
   navigateStageHistory,
   type StageHistory,
 } from "./stageHistory";
-import { EditorModal } from "./EditorModal";
 import "./director-stage.css";
 import {
   STAGE_MOTIONS,
@@ -415,6 +414,21 @@ export function DirectorStage({
   const [inserted, setInserted] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
   const loadedStage = useRef(historyState.present);
+  const consoleRef = useRef<HTMLDivElement>(null);
+  const consoleId = useId();
+  useEffect(() => {
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    consoleRef.current?.focus();
+    return () => {
+      document.body.style.overflow = overflow;
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
   const [assetNotice, setAssetNotice] = useState("");
@@ -612,7 +626,7 @@ export function DirectorStage({
       const target = event.target;
       if (
         !(target instanceof HTMLElement) ||
-        !target.closest(".cw-stage-dialog") ||
+        !target.closest(".cw-stage-console") ||
         target.matches(
           "input:not([type=range]),textarea,select,[contenteditable=true]",
         )
@@ -1517,17 +1531,72 @@ export function DirectorStage({
     else commit.close();
   };
   return (
-    <EditorModal
-      title={t("editors.stage.ui.title", { title: node.data.title })}
-      subtitle={t("editors.stage.ui.subtitle")}
-      className="cw-stage-dialog"
-      onClose={requestClose}
-      onApply={() => commit.apply(applyEdits)}
-      disabled={node.locked || renderProgress !== null || commit.saving}
-      error={commit.error || error}
+    <div
+      className="cw-domain-overlay"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
     >
-      <div>
-        <div className="cw-stage-toolbar">
+      <div
+        ref={consoleRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={consoleId}
+        tabIndex={-1}
+        className="cw-stage-console"
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === "Escape") {
+            event.preventDefault();
+            requestClose();
+          }
+          if (event.key === "Tab") {
+            const elements = [
+              ...(consoleRef.current?.querySelectorAll<HTMLElement>(
+                'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]',
+              ) ?? []),
+            ];
+            const first = elements[0],
+              last = elements.at(-1);
+            if (!first || !last) {
+              event.preventDefault();
+              return;
+            }
+            if (
+              event.shiftKey &&
+              (document.activeElement === first ||
+                document.activeElement === consoleRef.current)
+            ) {
+              event.preventDefault();
+              last.focus();
+            }
+            if (
+              !event.shiftKey &&
+              (document.activeElement === last ||
+                document.activeElement === consoleRef.current)
+            ) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+        }}
+      >
+      {/* The 3D frame is the base layer; every panel floats above it. */}
+      <div
+        className="cw-stage-scene"
+        ref={mount}
+        role="img"
+        aria-label={t("editors.stage.ui.stageAria")}
+      />
+      <fieldset className="cw-stage-panels" disabled={renderProgress !== null}>
+        <header className="cw-stage-topbar">
+          <div className="cw-stage-identity">
+            <h2 id={consoleId}>
+              {t("editors.stage.ui.title", { title: node.data.title })}
+            </h2>
+            <p>{t("editors.stage.ui.subtitle")}</p>
+          </div>
+          <div className="cw-stage-toolbar">
           <button
             disabled={!history.current.past.length || renderProgress !== null}
             onClick={() => navigate("undo")}
@@ -1602,6 +1671,28 @@ export function DirectorStage({
             {t("editors.stage.ui.renderMp4")}
           </button>
         </div>
+          <div className="cw-stage-topactions">
+            <button onClick={requestClose}>{t("common.cancel")}</button>
+            <button
+              className="cw-domain-primary"
+              disabled={node.locked || renderProgress !== null || commit.saving}
+              onClick={() => commit.apply(applyEdits)}
+            >
+              {t("editors.modal.apply")}
+            </button>
+            <button
+              onClick={requestClose}
+              aria-label={t("editors.modal.closeAria")}
+            >
+              ×
+            </button>
+          </div>
+        </header>
+        {(commit.error || error) && (
+          <p className="cw-stage-error" role="alert">
+            {commit.error || error}
+          </p>
+        )}
         {renderProgress !== null && (
           <div className="cw-render-status" role="status">
             <progress value={renderProgress} max={1} />
@@ -1648,9 +1739,7 @@ export function DirectorStage({
             </button>
           </div>
         )}
-        <fieldset className="cw-editor-work" disabled={renderProgress !== null}>
-          <div className="cw-stage-layout">
-            <aside className="cw-stage-objects">
+        <aside className="cw-stage-left">
               <h3>{t("editors.stage.ui.sceneObjects")}</h3>
               <div className="cw-stage-add">
                 {(["person", "box", "sphere"] as const).map((kind) => (
@@ -1727,15 +1816,7 @@ export function DirectorStage({
                 {t("editors.stage.ui.selectHint")}
               </p>
             </aside>
-            <section className="cw-stage-center">
-              <div
-                className="cw-stage-viewport"
-                ref={mount}
-                role="img"
-                aria-label={t("editors.stage.ui.stageAria")}
-              />
-            </section>
-            <aside className="cw-stage-inspector">
+            <aside className="cw-stage-right">
               <h3>
                 {object
                   ? t("editors.stage.ui.transform")
@@ -2097,9 +2178,8 @@ export function DirectorStage({
               >
                 {t("editors.stage.ui.resetCamera")}
               </button>
-            </aside>
-          </div>
-          <section className="cw-stage-timeline">
+        </aside>
+        <footer className="cw-stage-bottom">
           <div className="cw-stage-transport">
             <button
               disabled={!ready}
@@ -2269,10 +2349,7 @@ export function DirectorStage({
               </div>
             ))}
           </section>
-          </section>
-          <p className="cw-domain-note">
-            {t("editors.stage.ui.footerHint")}
-          </p>
+        </footer>
           <input
             className="cw-domain-file-input"
             ref={importInput}
@@ -2495,7 +2572,7 @@ export function DirectorStage({
           </div>
         )}
       </div>
-    </EditorModal>
+    </div>
   );
 }
 export default DirectorStage;
