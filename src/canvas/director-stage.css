@@ -1,5 +1,44 @@
+/* The director stage takes over the whole screen instead of a centered card. */
+.cw-domain-overlay:has(> .cw-stage-dialog) {
+  padding: 0;
+  background: #050509;
+  backdrop-filter: none;
+}
 .cw-stage-dialog {
-  width: min(1500px, 98vw);
+  width: 100vw;
+  height: 100dvh;
+  border: none;
+  border-radius: 0;
+}
+/* Tool actions live in a toolbar row under the dialog header. */
+.cw-stage-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px 0;
+}
+/* Unsaved-changes guard covering the fullscreen stage. */
+.cw-stage-confirm {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #050509cc;
+}
+.cw-stage-confirm > div {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 280px;
+  padding: 18px;
+  border: 1px solid #494151;
+  border-radius: 10px;
+  background: #19141f;
+}
+.cw-stage-confirm h3 {
+  margin: 0;
+  font-size: 15px;
 }
 .cw-stage-layout {
   display: grid;

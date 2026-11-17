@@ -23,6 +23,7 @@ import {
   stageOutputSize,
   stageExportPlan,
   unregisteredStageAssets,
+  sameLocalStage,
   defaultStageCamera,
   STAGE_RATIOS,
   STAGE_ASSET_MAX_BYTES,
@@ -412,6 +413,8 @@ export function DirectorStage({
     [time, setTime] = useState(0),
     [ready, setReady] = useState(false);
   const [inserted, setInserted] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+  const loadedStage = useRef(historyState.present);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
   const [assetNotice, setAssetNotice] = useState("");
@@ -1482,34 +1485,47 @@ export function DirectorStage({
       if (active.current) setRenderProgress(null);
     }
   };
+  const applyEdits = () =>
+    onApply(
+      parseLocalStageValue(stageRef.current, t),
+      // The drawer draft is the source of truth: captures, deletions and
+      // pinned items all commit as one list. A fresh stage with no history
+      // of stills pins a poster so the canvas keeps a preview. The baseline
+      // is the last committed state, not the mount-time node props, so a
+      // mid-session prepare does not resurrect a deleted drawer.
+      stills.length || committedStills.current.length
+        ? stills
+        : runtime.current
+          ? [{ id: crypto.randomUUID(), capture: captureOutputStill() }]
+          : stills,
+    );
+  // Drawer edits (captures, deletions) are unsaved work the close guard
+  // must catch even when the stage itself is untouched.
+  const stillsDirty =
+    stills.length !== (node.data.stills?.length ?? 0) ||
+    stills.some(
+      (item, index) =>
+        !!item.capture ||
+        item.asset?.assetId !== node.data.stills?.[index]?.asset?.assetId,
+    );
+  const dirty =
+    stillsDirty || !sameLocalStage(loadedStage.current, stage);
+  const requestClose = () => {
+    if (dirty && !commit.saving) setConfirmingClose(true);
+    else commit.close();
+  };
   return (
     <EditorModal
       title={t("editors.stage.ui.title", { title: node.data.title })}
       subtitle={t("editors.stage.ui.subtitle")}
       className="cw-stage-dialog"
-      onClose={commit.close}
-      onApply={() =>
-        commit.apply(() =>
-          onApply(
-            parseLocalStageValue(stageRef.current, t),
-            // The drawer draft is the source of truth: captures, deletions
-            // and pinned items all commit as one list. A fresh stage with no
-            // history of stills pins a poster so the canvas keeps a preview.
-            // The baseline is the last committed state, not the mount-time
-            // node props, so a mid-session prepare does not resurrect a
-            // deleted drawer.
-            stills.length || committedStills.current.length
-              ? stills
-              : runtime.current
-                ? [{ id: crypto.randomUUID(), capture: captureOutputStill() }]
-                : stills,
-          ),
-        )
-      }
+      onClose={requestClose}
+      onApply={() => commit.apply(applyEdits)}
       disabled={node.locked || renderProgress !== null || commit.saving}
       error={commit.error || error}
-      actions={
-        <>
+    >
+      <div>
+        <div className="cw-stage-toolbar">
           <button
             disabled={!history.current.past.length || renderProgress !== null}
             onClick={() => navigate("undo")}
@@ -1529,6 +1545,7 @@ export function DirectorStage({
             {t("editors.stage.ui.importJson")}
           </button>
           <button
+            disabled={renderProgress !== null}
             onClick={() => {
               // Exports carry no model bytes: an import that exists only as a
               // browser URL would become an unopenable object, so name it.
@@ -1582,10 +1599,7 @@ export function DirectorStage({
           >
             {t("editors.stage.ui.renderMp4")}
           </button>
-        </>
-      }
-    >
-      <div>
+        </div>
         {renderProgress !== null && (
           <div className="cw-render-status" role="status">
             <progress value={renderProgress} max={1} />
@@ -2560,6 +2574,29 @@ export function DirectorStage({
                 </button>
               </figcaption>
             </figure>
+          </div>
+        )}
+        {confirmingClose && (
+          <div className="cw-stage-confirm" role="dialog" aria-modal="true">
+            <div>
+              <h3>{t("editors.stage.ui.unsavedTitle")}</h3>
+              <button onClick={() => setConfirmingClose(false)}>
+                {t("editors.stage.ui.keepEditing")}
+              </button>
+              <button onClick={commit.close}>
+                {t("editors.stage.ui.discardClose")}
+              </button>
+              <button
+                className="cw-domain-primary"
+                disabled={commit.saving}
+                onClick={() => {
+                  setConfirmingClose(false);
+                  commit.apply(applyEdits);
+                }}
+              >
+                {t("editors.stage.ui.saveClose")}
+              </button>
+            </div>
           </div>
         )}
       </div>

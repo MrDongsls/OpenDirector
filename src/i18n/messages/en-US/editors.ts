@@ -337,6 +337,10 @@ export const editors = {
   "editors.stage.ui.motionTitle": "{title} · Motion preview",
   "editors.stage.ui.addCanvasFailed": "Adding to the canvas failed.",
   "editors.stage.ui.title": "Director preview · {title}",
+  "editors.stage.ui.unsavedTitle": "Unsaved stage changes",
+  "editors.stage.ui.keepEditing": "Keep editing",
+  "editors.stage.ui.discardClose": "Discard and close",
+  "editors.stage.ui.saveClose": "Save and close",
   "editors.stage.ui.subtitle":
     "Local 3D stage · camera and subject keyframes",
   "editors.stage.ui.undo": "Undo",
