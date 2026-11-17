@@ -100,7 +100,7 @@ const openStage = async (itemId) => {
 
 const timelineId = crypto.randomUUID();
 const clipId = crypto.randomUUID();
-let firstStill, secondStill, videoRef, videoAsset, itemId;
+let firstStill, secondStill, videoRef, videoAsset, itemId, renderMs;
 try {
   await page.goto(`${base}/ai-tool/ai-canvas/${projectId}?creation=unified`);
   await page.getByText("Saved on this device", { exact: true }).waitFor();
@@ -173,12 +173,14 @@ try {
   );
 
   await openStage(itemId);
+  const renderStartedAt = Date.now();
   await page
     .getByRole("button", { name: "Render preview MP4", exact: true })
     .click();
   await page
     .getByText("Preview MP4 complete · 1280×720 · 30 fps", { exact: true })
     .waitFor({ timeout: 240000 });
+  renderMs = Date.now() - renderStartedAt;
   await page
     .getByRole("button", { name: "Add preview video to canvas", exact: true })
     .click();
@@ -213,6 +215,14 @@ try {
   );
   await openStage(itemId);
   await apply();
+  // A fresh session holds no import cache: the cleared capture must not
+  // re-register the still the reload already carries.
+  const reloaded = await state();
+  assert.equal(
+    imageAssets(reloaded).length,
+    imageAssets(recaptured).length,
+    "reopening and applying must not register a duplicate still",
+  );
   assert.deepEqual(errors, []);
 } catch (error) {
   console.error((await page.locator("body").innerText()).slice(-2500));
@@ -320,6 +330,7 @@ console.log(
     stillAssetIds: [firstStill.assetId, secondStill.assetId],
     videoAssetId: videoAsset.id,
     timelineId,
+    renderMs,
     checks: [
       "first apply auto-captures a 1280x720 still asset",
       "uncaptured applies keep the pinned still without new assets",

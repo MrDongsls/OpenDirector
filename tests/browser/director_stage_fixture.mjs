@@ -176,6 +176,25 @@ export function makeUnlitGlb() {
   });
 }
 
+/** A GLB whose pure-emission material must survive selection and export:
+ * black base color plus a strong emissiveFactor, so the rendered pixels are
+ * dominated by the authored emission regardless of scene lighting. */
+export function makeEmissiveGlb() {
+  return makeGlb({
+    materials: [
+      {
+        pbrMetallicRoughness: { baseColorFactor: [0, 0, 0, 1] },
+        emissiveFactor: [1, 0.05, 0.02],
+      },
+    ],
+    meshes: [
+      {
+        primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }],
+      },
+    ],
+  });
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const destination = process.argv[2];
   if (!destination) throw new Error("Usage: node director_stage_fixture.mjs <path> [--animated]");

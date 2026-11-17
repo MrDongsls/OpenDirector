@@ -222,6 +222,13 @@
       "note": "Fourth-phase Director Stage acceptance: captured stills and preview MP4s become tracked project assets the timeline can reference."
     },
     {
+      "file": "director_stage_media_travel.mjs",
+      "lanes": [
+        "manual"
+      ],
+      "note": "Stage media travel regressions: emissive materials survive selection, stage JSON round trips resolve pins, slow or failing model loads gate the render, cross-project paste and canvas archives re-home stage assets, and the published stage renders its provenance edge."
+    },
+    {
       "file": "director_stage_delivery.mjs",
       "lanes": [
         "manual"
