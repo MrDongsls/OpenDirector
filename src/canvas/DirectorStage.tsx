@@ -431,6 +431,11 @@ export function DirectorStage({
   }, []);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
+  const [leftTab, setLeftTab] = useState<"characters" | "objects" | "cameras" | "background">("characters");
+  const [cameraPreview, setCameraPreview] = useState(false);
+  const [aspectMask, setAspectMask] = useState(false);
+  const cameraPreviewRef = useRef(false);
+  cameraPreviewRef.current = cameraPreview;
   const [assetNotice, setAssetNotice] = useState("");
   /** Drawer draft over node.data.stills: pinned items plus unsaved captures,
    * committed as a whole by the next apply. */
@@ -694,6 +699,7 @@ export function DirectorStage({
     const fill = new THREE.DirectionalLight(0x8d88ff, 1.8);
     fill.position.set(-6, 5, -5);
     scene.add(fill);
+    const pipCamera = new THREE.PerspectiveCamera(45, 16 / 9, 0.05, 1000);
     const current: StageRuntime = {
       renderer,
       scene,
@@ -787,7 +793,28 @@ export function DirectorStage({
     renderer.domElement.addEventListener("webglcontextlost", contextLost);
     let frame = 0;
     const render = () => {
+      renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
       renderer.render(scene, camera);
+      // Camera preview: a second pass drawing what the stage camera frames,
+      // exactly what the still and the MP4 will capture.
+      if (cameraPreviewRef.current) {
+        const size = stageOutputSize(stageRef.current.aspectRatio);
+        const pose = sampleStage(stageRef.current, timeRef.current).camera;
+        pipCamera.aspect = size.width / size.height;
+        pipCamera.fov = pose.fov;
+        pipCamera.position.set(pose.position.x, pose.position.y, pose.position.z);
+        pipCamera.lookAt(pose.target.x, pose.target.y, pose.target.z);
+        pipCamera.updateProjectionMatrix();
+        const width = Math.min(320, renderer.domElement.width * 0.25);
+        const height = width / pipCamera.aspect;
+        const x = renderer.domElement.width - width - 12;
+        const y = renderer.domElement.height - height - 64;
+        renderer.setScissorTest(true);
+        renderer.setViewport(x, y, width, height);
+        renderer.setScissor(x, y, width, height);
+        renderer.render(scene, pipCamera);
+        renderer.setScissorTest(false);
+      }
       frame = requestAnimationFrame(render);
     };
     render();
@@ -1544,6 +1571,11 @@ export function DirectorStage({
         aria-labelledby={consoleId}
         tabIndex={-1}
         className="cw-stage-console"
+        style={
+          {
+            "--stage-aspect": String(outputSize.width / outputSize.height),
+          } as React.CSSProperties
+        }
         onKeyDown={(event) => {
           event.stopPropagation();
           if (event.key === "Escape") {
@@ -1588,6 +1620,8 @@ export function DirectorStage({
         role="img"
         aria-label={t("editors.stage.ui.stageAria")}
       />
+      {aspectMask && <div className="cw-stage-mask" aria-hidden="true" />}
+      {cameraPreview && <div className="cw-stage-pipframe" aria-hidden="true" />}
       <fieldset className="cw-stage-panels" disabled={renderProgress !== null}>
         <header className="cw-stage-topbar">
           <div className="cw-stage-identity">
@@ -1671,6 +1705,24 @@ export function DirectorStage({
             {t("editors.stage.ui.renderMp4")}
           </button>
         </div>
+          <span
+            className={`cw-stage-chip${dirty ? " is-unsaved" : ""}`}
+            aria-live="polite"
+          >
+            {t(dirty ? "editors.stage.ui.unsavedChip" : "editors.stage.ui.savedChip")}
+          </span>
+          <button
+            aria-pressed={cameraPreview}
+            onClick={() => setCameraPreview((current) => !current)}
+          >
+            {t("editors.stage.ui.cameraPreview")}
+          </button>
+          <button
+            aria-pressed={aspectMask}
+            onClick={() => setAspectMask((current) => !current)}
+          >
+            {t("editors.stage.ui.aspectMask")}
+          </button>
           <div className="cw-stage-topactions">
             <button onClick={requestClose}>{t("common.cancel")}</button>
             <button
@@ -1740,31 +1792,41 @@ export function DirectorStage({
           </div>
         )}
         <aside className="cw-stage-left">
-              <h3>{t("editors.stage.ui.sceneObjects")}</h3>
-              <div className="cw-stage-add">
-                {(["person", "box", "sphere"] as const).map((kind) => (
-                  <button key={kind} onClick={() => addObject(kind)}>
-                    + {t(titles[kind])}
-                  </button>
-                ))}
-              </div>
-              <label className="cw-domain-field">
-                {t("editors.stage.ui.assetRole")}
-                <select
-                  value={assetRole}
-                  onChange={(event) =>
-                    setAssetRole(event.target.value as StageAssetRole)
-                  }
+          <div className="cw-stage-tabs" role="tablist">
+            {(["characters", "objects", "cameras", "background"] as const).map(
+              (tab) => (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={leftTab === tab}
+                  onClick={() => setLeftTab(tab)}
                 >
-                  <option value="character">
-                    {t("editors.stage.ui.assetCharacter")}
-                  </option>
-                  <option value="scene">
-                    {t("editors.stage.ui.assetScene")}
-                  </option>
-                </select>
-              </label>
-              <button onClick={() => assetInput.current?.click()}>
+                  {t(`editors.stage.ui.tab${tab[0]!.toUpperCase()}${tab.slice(1)}` as never)}
+                </button>
+              ),
+            )}
+          </div>
+          {(leftTab === "characters" || leftTab === "objects") && (
+            <>
+              <div className="cw-stage-add">
+                {leftTab === "characters" ? (
+                  <button onClick={() => addObject("person")}>
+                    + {t(titles.person)}
+                  </button>
+                ) : (
+                  (["box", "sphere"] as const).map((kind) => (
+                    <button key={kind} onClick={() => addObject(kind)}>
+                      + {t(titles[kind])}
+                    </button>
+                  ))
+                )}
+              </div>
+              <button
+                onClick={() => {
+                  setAssetRole(leftTab === "characters" ? "character" : "scene");
+                  assetInput.current?.click();
+                }}
+              >
                 + {t("editors.stage.ui.importAsset")}
               </button>
               {assetNotice && (
@@ -1773,17 +1835,54 @@ export function DirectorStage({
                 </p>
               )}
               <div className="cw-stage-object-list">
-                {stage.objects.map((item) => (
+                {stage.objects
+                  .filter((item) =>
+                    leftTab === "characters"
+                      ? item.kind === "person" ||
+                        (item.kind === "gltf" && item.role === "character")
+                      : item.kind === "box" ||
+                        item.kind === "sphere" ||
+                        (item.kind === "gltf" && item.role === "scene"),
+                  )
+                  .map((item) => (
+                    <button
+                      key={item.id}
+                      aria-pressed={selected === item.id}
+                      onClick={() => setSelected(item.id)}
+                    >
+                      <span style={{ background: item.color }} />
+                      {item.name}
+                    </button>
+                  ))}
+              </div>
+            </>
+          )}
+          {leftTab === "cameras" && (
+            <>
+              <button onClick={addCamera}>{t("editors.stage.ui.addCamera")}</button>
+              <div className="cw-stage-object-list">
+                {stage.cameras.map((rig) => (
                   <button
-                    key={item.id}
-                    aria-pressed={selected === item.id}
-                    onClick={() => setSelected(item.id)}
+                    key={rig.id}
+                    aria-pressed={stage.activeCameraId === rig.id}
+                    onClick={() =>
+                      edit((current) => ({
+                        ...current,
+                        activeCameraId: rig.id,
+                      }))
+                    }
                   >
-                    <span style={{ background: item.color }} />
-                    {item.name}
+                    {rig.name}
                   </button>
                 ))}
               </div>
+              <p className="cw-domain-note">
+                {t("editors.stage.ui.cameraHint")}
+              </p>
+            </>
+          )}
+          {leftTab === "background" && (
+            <>
               <label className="cw-domain-field">
                 {t("editors.stage.ui.background")}
                 <input
@@ -1815,6 +1914,8 @@ export function DirectorStage({
                 <br />
                 {t("editors.stage.ui.selectHint")}
               </p>
+            </>
+          )}
             </aside>
             <aside className="cw-stage-right">
               <h3>

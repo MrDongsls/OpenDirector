@@ -24,6 +24,10 @@
 }
 .cw-stage-scene canvas {
   display: block;
+  /* The buffer scales with the device pixel ratio; the CSS box must stay
+   * pinned to the container or a HiDPI display shows a zoomed, blurry crop. */
+  width: 100%;
+  height: 100%;
 }
 .cw-stage-panels {
   position: absolute;
@@ -700,4 +704,70 @@
   .cw-stage-shot {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+/* Left panel tabs. */
+.cw-stage-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.cw-stage-tabs button {
+  padding: 6px 4px;
+  border: 1px solid #352a4a;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #b9a9c9;
+  background: #1b1526;
+}
+.cw-stage-tabs button[aria-selected="true"] {
+  color: #f0e8f8;
+  border-color: #6b4fa0;
+  background: #2a2040;
+}
+/* Save-state chip in the top bar. */
+.cw-stage-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #9fd6a8;
+  background: #1d2a1f;
+  border: 1px solid #2f4a33;
+}
+.cw-stage-chip.is-unsaved {
+  color: #f0c2a0;
+  background: #33241a;
+  border-color: #5a3d28;
+}
+/* Aspect mask: letterbox the shot frame over the free-form preview. */
+.cw-stage-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cw-stage-mask::after {
+  content: "";
+  width: 100%;
+  height: 100%;
+  max-width: calc((100vh - 260px) * var(--stage-aspect, 1.7778));
+  max-height: calc(100vh - 260px);
+  aspect-ratio: var(--stage-aspect, 1.7778);
+  outline: 9999px solid #050509b8;
+  border: 1px solid #6b4fa0;
+}
+/* Frame drawn around the scissored camera-preview pass. */
+.cw-stage-pipframe {
+  position: absolute;
+  right: 12px;
+  top: 64px;
+  width: min(320px, 25%);
+  aspect-ratio: var(--stage-aspect, 1.7778);
+  z-index: 6;
+  pointer-events: none;
+  border: 1px solid #6b4fa0;
+  border-radius: 4px;
 }
