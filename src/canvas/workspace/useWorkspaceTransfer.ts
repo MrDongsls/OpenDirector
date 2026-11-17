@@ -522,6 +522,7 @@ export function useWorkspaceTransfer(rt: WorkspaceRuntime) {
           return {
             assetId: ref.assetId,
             src: await client.adoptMedia(ref.assetId, blob),
+            ref,
           };
         },
       );

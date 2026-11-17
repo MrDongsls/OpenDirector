@@ -13,6 +13,13 @@ import {
   stageUploadTitle,
 } from "../src/backend/creationProjection.ts";
 import { CreationClient } from "../src/backend/creationClient.ts";
+import {
+  captureClipboardMedia,
+  transferClipboardMedia,
+  type RegisteredMedia,
+} from "../src/canvas/clipboardMedia.ts";
+import { createNode } from "../src/canvas/model.ts";
+import type { CanvasFragment } from "../src/canvas/operations.ts";
 import type { ProjectSnapshot } from "../src/contracts/generated.ts";
 import type { AssetRef } from "../src/contracts/generated.ts";
 
@@ -475,4 +482,158 @@ test("director saves fail loudly when imported model bytes cannot be read", asyn
     ],
   });
   await assert.rejects(directorWrite({ id: "director-node", localStage: stage }).document);
+});
+
+const stillRef: AssetRef = {
+  assetId: "still-1",
+  revision: 1,
+  fingerprint: `sha256:${"e".repeat(64)}`,
+  kind: "image",
+};
+
+test("cross-project pastes re-home the stage still and imported models", async () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    objects: [
+      ...createLocalStage().objects,
+      {
+        ...createLocalStage().objects[0]!,
+        id: "walker",
+        kind: "gltf",
+        name: "Walker",
+        role: "character",
+        format: "glb",
+        source: "data:application/octet-stream;base64,R0xGQg==",
+        asset,
+        animationNames: ["Walk"],
+        hasAnimation: true,
+        motionClips: [],
+      },
+    ],
+  });
+  const node = createNode("external", { x: 0, y: 0 }, {
+    title: "Stage board",
+    localStage: stage,
+    src: "data:image/png;base64,aVBoTgc=",
+    stillAsset: stillRef,
+    stillCapture: "data:image/png;base64,aVBoTgc=",
+  });
+  const fragment: CanvasFragment = { nodes: [node], edges: [] };
+  const media = captureClipboardMedia("project-a", fragment, {
+    read: async (src) =>
+      new Blob([src], {
+        type: src.startsWith("data:image") ? "image/png" : "model/gltf-binary",
+      }),
+  });
+  const calls: { title: string; kind: string }[] = [];
+  const register = async (
+    _blob: Blob,
+    title: string,
+    kind: string,
+  ): Promise<RegisteredMedia> => {
+    calls.push({ title, kind });
+    return {
+      assetId: `copy-${title}`,
+      src: `blob:target/${title}`,
+      ref: {
+        assetId: `copy-${title}`,
+        revision: 1,
+        fingerprint: `sha256:${title}`,
+        kind: kind as RegisteredMedia["ref"]["kind"],
+      },
+    };
+  };
+  const pasted = await transferClipboardMedia(
+    fragment,
+    media,
+    "project-b",
+    register,
+  );
+  assert.deepEqual(calls, [
+    { title: "Stage board", kind: "image" },
+    { title: "Walker", kind: "file" },
+  ]);
+  const data = pasted.nodes[0]!.data;
+  // The still registers once through its preview; the pin follows that copy.
+  assert.equal(data.src, "blob:target/Stage board");
+  assert.equal(data.backendAssetId, "copy-Stage board");
+  assert.equal(data.stillAsset?.assetId, "copy-Stage board");
+  // The capture's bytes would register a duplicate in the target's first save.
+  assert.equal(data.stillCapture, undefined);
+  const walker = data.localStage!.objects.find(
+    (object) => object.kind === "gltf",
+  )!;
+  assert.equal(walker.source, "blob:target/Walker");
+  assert.equal(walker.asset?.assetId, "copy-Walker");
+  // The clipboard original keeps the source project's identities.
+  assert.equal(node.data.stillAsset?.assetId, "still-1");
+  assert.equal(node.data.stillCapture, "data:image/png;base64,aVBoTgc=");
+  assert.equal(
+    stage.objects.find((object) => object.kind === "gltf")!.source,
+    "data:application/octet-stream;base64,R0xGQg==",
+  );
+});
+
+test("cross-project pastes fail when a stage pin has no reachable bytes", async () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    objects: [
+      ...createLocalStage().objects,
+      {
+        ...createLocalStage().objects[0]!,
+        id: "walker",
+        kind: "gltf",
+        name: "Walker",
+        role: "character",
+        format: "glb",
+        asset,
+        animationNames: ["Walk"],
+        hasAnimation: true,
+        motionClips: [],
+      },
+    ],
+  });
+  const node = createNode("external", { x: 0, y: 0 }, {
+    title: "Stage board",
+    localStage: stage,
+    stillAsset: stillRef,
+  });
+  const fragment: CanvasFragment = { nodes: [node], edges: [] };
+  const media = captureClipboardMedia("project-a", fragment, {
+    read: async () => new Blob(["x"]),
+  });
+  await assert.rejects(
+    transferClipboardMedia(fragment, media, "project-b", async () => {
+      throw Error("unreachable");
+    }),
+    /已失效/,
+  );
+});
+
+test("an unreadable still pin falls back to the carried capture bytes", async () => {
+  const node = createNode("external", { x: 0, y: 0 }, {
+    title: "Stage board",
+    localStage: createLocalStage(),
+    stillAsset: stillRef,
+    stillCapture: "data:image/png;base64,aVBoTgc=",
+  });
+  const fragment: CanvasFragment = { nodes: [node], edges: [] };
+  const media = captureClipboardMedia("project-a", fragment, {
+    read: async () => {
+      throw Error("no preview to read");
+    },
+  });
+  const pasted = await transferClipboardMedia(
+    fragment,
+    media,
+    "project-b",
+    async () => {
+      throw Error("unreachable");
+    },
+  );
+  const data = pasted.nodes[0]!.data;
+  // The stale source-project pin is dropped; the target's save registers the
+  // capture bytes the paste still carries.
+  assert.equal(data.stillAsset, undefined);
+  assert.equal(data.stillCapture, "data:image/png;base64,aVBoTgc=");
 });

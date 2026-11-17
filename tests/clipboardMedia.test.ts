@@ -94,6 +94,12 @@ function registrar() {
     return {
       assetId: `target-${calls.length}`,
       src: `blob:target/${calls.length}`,
+      ref: {
+        assetId: `target-${calls.length}`,
+        revision: 1,
+        fingerprint: `sha256:${calls.length}`,
+        kind: kind as RegisteredMedia["ref"]["kind"],
+      },
     };
   };
   return { calls, register };
@@ -230,9 +236,18 @@ test("saved source assets are offered for a server-side copy", async () => {
     fragment,
     media,
     "project-b",
-    async (_blob, title, _kind, source) => {
+    async (_blob, title, kind, source) => {
       sources.push(source);
-      return { assetId: `copy-of-${title}`, src: `blob:target/${title}` };
+      return {
+        assetId: `copy-of-${title}`,
+        src: `blob:target/${title}`,
+        ref: {
+          assetId: `copy-of-${title}`,
+          revision: 1,
+          fingerprint: `sha256:${title}`,
+          kind: kind as RegisteredMedia["ref"]["kind"],
+        },
+      };
     },
   );
   assert.deepEqual(sources, [

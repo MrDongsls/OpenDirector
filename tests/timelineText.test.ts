@@ -178,7 +178,16 @@ test("cross-project copying registers font and original text bytes and discards 
       "target",
       async (blob, _title, kind, source) => {
         calls.push({ kind, body: await blob.text(), source: source?.assetId });
-        return { assetId: `target-${kind}`, src: `blob:target-${kind}` };
+        return {
+          assetId: `target-${kind}`,
+          src: `blob:target-${kind}`,
+          ref: {
+            assetId: `target-${kind}`,
+            revision: 1,
+            fingerprint: `sha256:${kind}`,
+            kind,
+          },
+        };
       },
     );
     assert.deepEqual(

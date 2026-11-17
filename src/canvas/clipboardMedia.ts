@@ -1,6 +1,8 @@
 import { MEDIA_FIELDS } from "./canvasArchive.ts";
 import type { CanvasResource } from "./model.ts";
 import type { CanvasFragment } from "./operations.ts";
+import { applyStageMedia, stageMediaItems } from "./stageMedia.ts";
+import type { AssetRef } from "../contracts/generated.ts";
 import { tNow } from "../i18n/messages.ts";
 
 const KINDS = new Set<CanvasResource["kind"]>([
@@ -25,6 +27,8 @@ export interface ClipboardMedia {
 export interface RegisteredMedia {
   assetId: string;
   src: string;
+  /** The registered asset's full identity, so pins re-home alongside previews. */
+  ref: AssetRef;
 }
 
 /** A saved asset in the source project, with the content the copy captured. */
@@ -98,7 +102,7 @@ export function captureClipboardMedia(
 ): ClipboardMedia {
   const blobs = new Map<string, Promise<Blob>>();
   const sources = new Map<string, MediaSource>();
-  for (const node of fragment.nodes)
+  for (const node of fragment.nodes) {
     visitMedia(node, (record, key, src) => {
       const saved =
         key === "src"
@@ -111,6 +115,22 @@ export function captureClipboardMedia(
       pending.catch(() => {});
       blobs.set(src, pending);
     });
+    // Stage model previews are not generic media fields; read their bytes now
+    // or the paste can never reach them again.
+    for (const item of stageMediaItems(node.data)) {
+      if (item.role !== "model" || !item.url) continue;
+      if (item.asset && !sources.has(item.url))
+        sources.set(item.url, {
+          projectId,
+          assetId: item.asset.assetId,
+          fingerprint: item.asset.fingerprint,
+        });
+      if (blobs.has(item.url)) continue;
+      const pending = read(item.url);
+      pending.catch(() => {});
+      blobs.set(item.url, pending);
+    }
+  }
   return { projectId, blobs, sources, registered: new Map() };
 }
 
@@ -134,6 +154,8 @@ export async function transferClipboardMedia(
     const nodeKind = KINDS.has(node.type as CanvasResource["kind"])
       ? (node.type as CanvasResource["kind"])
       : undefined;
+    // Stage media is read before the generic walk rewrites the still's preview.
+    const stageItems = stageMediaItems(node.data);
     visitMedia(node, (record, key, src) => {
       const blob = media.blobs.get(src);
       if (!blob) throw new Error(tNow("errors.files.clipboardExpired"));
@@ -176,6 +198,10 @@ export async function transferClipboardMedia(
         }),
       );
     });
+    if (stageItems.length)
+      registrations.push(
+        transferStageMedia(node, stageItems, media, targetProjectId, register),
+      );
   }
   // Settle every upload before failing, so a retry finds the successful ones.
   const failed = (await Promise.allSettled(registrations)).find(
@@ -206,4 +232,58 @@ function mediaKind(mimeType: string): CanvasResource["kind"] {
   if (mimeType.split(";")[0] === "text/plain") return "text";
   const family = mimeType.split("/")[0] as CanvasResource["kind"];
   return ["image", "video", "audio"].includes(family) ? family : "file";
+}
+
+/** Re-homes a director node's stage media. Saved assets copy on the server
+ * first, with the bytes captured at copy time as the fallback. A stage pin the
+ * copy can no longer reach fails the paste instead of inserting a reference
+ * the target project's save would reject. */
+async function transferStageMedia(
+  node: CanvasFragment["nodes"][number],
+  items: ReturnType<typeof stageMediaItems>,
+  media: ClipboardMedia,
+  targetProjectId: string,
+  register: RegisterMedia,
+): Promise<void> {
+  const registered = new Map<
+    ReturnType<typeof stageMediaItems>[number],
+    RegisteredMedia
+  >();
+  // Settle every stage registration before failing, matching the generic walk.
+  const settled = await Promise.allSettled(
+    items.map(async (item) => {
+      if (item.role === "still" && !item.url && node.data.stillCapture) {
+        // Unreadable pin, in-hand bytes: the capture registers in the target.
+        delete node.data.stillAsset;
+        return;
+      }
+      if (!item.url) throw new Error(tNow("errors.files.clipboardExpired"));
+      const cacheKey = `${targetProjectId}\n${item.url}`;
+      let pending = media.registered.get(cacheKey);
+      if (!pending) {
+        const blob = media.blobs.get(item.url);
+        if (!blob) throw new Error(tNow("errors.files.clipboardExpired"));
+        pending = blob
+          .then((bytes) =>
+            register(
+              bytes,
+              item.title,
+              item.kind,
+              media.sources.get(item.url!),
+            ),
+          )
+          .catch((error) => {
+            media.registered.delete(cacheKey);
+            throw error;
+          });
+        media.registered.set(cacheKey, pending);
+      }
+      registered.set(item, await pending);
+    }),
+  );
+  const failure = settled.find((result) => result.status === "rejected");
+  if (failure) throw (failure as PromiseRejectedResult).reason;
+  applyStageMedia(node.data, items, (item) =>
+    item ? registered.get(item) : undefined,
+  );
 }
