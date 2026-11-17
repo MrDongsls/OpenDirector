@@ -221,6 +221,30 @@ async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
   const loaded = await new GLTFLoader().loadAsync(source);
   return { scene: loaded.scene, animations: loaded.animations };
 }
+/** Waits for every model the stage needs. The first model whose bytes are
+ * still loading or failed names the error, so a render refuses instead of
+ * encoding a permanent placeholder or silently skipping the model. */
+async function awaitStageAssets(
+  objects: StageObject[],
+  assetCache: Map<string, Promise<LoadedStageAsset>>,
+  signal: AbortSignal,
+  unavailable: (name: string) => Error,
+): Promise<Map<string, LoadedStageAsset>> {
+  const loaded = new Map<string, LoadedStageAsset>();
+  for (const object of objects) {
+    if (object.kind !== "gltf") continue;
+    signal.throwIfAborted();
+    const key = object.asset?.assetId ?? object.source;
+    const pending = key ? assetCache.get(key) : undefined;
+    if (!pending) throw unavailable(object.name);
+    try {
+      loaded.set(object.id, await pending);
+    } catch {
+      throw unavailable(object.name);
+    }
+  }
+  return loaded;
+}
 function applySelectionHighlight(
   root: THREE.Object3D,
   selected: string | null,
@@ -1254,32 +1278,34 @@ export function DirectorStage({
         ? await onPrepareRender(exportStage)
         : onRender;
       controller.signal.throwIfAborted();
-      // Snapshot the scene only after preparation: a model whose preview
-      // load lands while preparing would otherwise export as its placeholder.
+      // A model still loading or one whose load failed must stop the render
+      // before the scene is cloned, or the placeholder becomes permanent.
+      const stageAssets = await awaitStageAssets(
+        exportStage.objects,
+        previewRuntime.assetCache,
+        controller.signal,
+        (name) => new Error(t("editors.stage.ui.assetLoadFailed", { name })),
+      );
+      controller.signal.throwIfAborted();
       scene = previewRuntime.scene.clone(true);
       const root = scene.getObjectByName("stage-objects")!;
       const renderImported = new Map<string, ImportedRuntime>();
-      for (const [id, binding] of previewRuntime.imported) {
-        const item = exportStage.objects.find((object) => object.id === id);
+      for (const item of exportStage.objects) {
+        if (item.kind !== "gltf") continue;
         const cloned = root.children.find(
-          (child) => child.userData.objectId === id,
+          (child) => child.userData.objectId === item.id,
         );
+        const loaded = stageAssets.get(item.id);
+        if (!cloned || !loaded) continue;
         // Clone from the pristine cached scene, not the posed runtime clone,
         // so frames outside motion clips render the authored rest pose.
-        const cached = previewRuntime.assetCache.get(
-          item?.asset?.assetId ?? item?.source ?? "",
-        );
-        const source =
-          (cached ? await cached.catch(() => undefined) : undefined)?.scene ??
-          binding.root.children[0];
-        if (!item || !cloned || !source) continue;
-        const replacement = cloneImportedAsset(item, {
-          scene: source,
-          animations: binding.clips,
-        });
+        const replacement = cloneImportedAsset(item, loaded);
         root.remove(cloned);
         root.add(replacement);
-        renderImported.set(id, createImportedRuntime(replacement, binding.clips));
+        renderImported.set(
+          item.id,
+          createImportedRuntime(replacement, loaded.animations),
+        );
       }
       scene.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
