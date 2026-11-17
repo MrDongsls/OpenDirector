@@ -1,7 +1,7 @@
 import { Background, BackgroundVariant, MiniMap, SelectionMode, ViewportPortal } from "@xyflow/react";
 
 import "@xyflow/react/dist/style.css";
-import { Suspense, type CSSProperties } from "react";
+import { Suspense, useCallback, type CSSProperties } from "react";
 import { NodeVersionHistory } from "../NodeVersionHistory";
 
 import openDirectorLogoAnimation from "../../assets/open_director_logo_anim.gif";
@@ -297,6 +297,11 @@ export function WorkspaceView({ rt }: { rt: WorkspaceRuntime }) {
     zoomMenu,
   } = rt;
 
+  // Stable across renders so the stage's load effect does not rerun per keystroke.
+  const resolveStageAssetSource = useCallback(
+    (assetId: string) => creationClient(doc.id).mediaUrl(assetId),
+    [doc.id],
+  );
 
   const workspace = (
     <div
@@ -2550,6 +2555,7 @@ export function WorkspaceView({ rt }: { rt: WorkspaceRuntime }) {
                   ref.revision <= asset.revision,
               );
             }}
+            resolveStageAssetSource={resolveStageAssetSource}
             onPrepareRender={async (localStage) => {
               await commitEditorData({ localStage });
               const origin = editorOrigin.current!;

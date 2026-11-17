@@ -73,6 +73,9 @@ export interface DirectorStageProps {
   /** Whether a pinned asset is registered in the currently open project;
    * stage JSON imports reject objects pinning assets it reports as absent. */
   isRegisteredAsset?: (asset: AssetRef) => boolean;
+  /** Reads a pinned asset's preview bytes in the open project, so models
+   * whose document carries a pin but no preview URL still load. */
+  resolveStageAssetSource?: (assetId: string) => Promise<string>;
 }
 interface LoadedStageAsset {
   scene: THREE.Object3D;
@@ -487,6 +490,7 @@ export function DirectorStage({
   onRender,
   onPrepareRender,
   isRegisteredAsset,
+  resolveStageAssetSource,
 }: DirectorStageProps) {
   const { t } = useI18n();
   const [historyState, setHistoryState] = useState(() =>
@@ -942,23 +946,37 @@ export function DirectorStage({
     const load = async () => {
       for (const item of stage.objects) {
         if (item.kind !== "gltf") continue;
-        if (!item.source) {
-          if (item.asset) setError(t("editors.stage.ui.assetUnavailable"));
-          continue;
+        let source = item.source;
+        if (!source) {
+          if (!item.asset) continue;
+          // A reopened stage or an imported JSON pins the asset but carries
+          // no live preview URL; the open project still holds the bytes.
+          if (resolveStageAssetSource) {
+            try {
+              source = await resolveStageAssetSource(item.asset.assetId);
+            } catch {
+              source = undefined;
+            }
+            if (cancelled || !active.current) return;
+          }
+          if (!source) {
+            setError(t("editors.stage.ui.assetUnavailable"));
+            continue;
+          }
         }
         const existing = current.root.children.find(
           (child) => child.userData.objectId === item.id,
         );
         if (
-          existing?.userData.assetSource === item.source &&
+          existing?.userData.assetSource === source &&
           current.imported.has(item.id)
         )
           continue;
         try {
-          const cacheKey = item.asset?.assetId ?? item.source;
+          const cacheKey = item.asset?.assetId ?? source;
           let pending = current.assetCache.get(cacheKey);
           if (!pending) {
-            pending = loadStageAsset(item.source);
+            pending = loadStageAsset(source);
             current.assetCache.set(cacheKey, pending);
             // A failed load must not poison the cache; evict it so a later
             // effect run can retry.
@@ -1001,7 +1019,7 @@ export function DirectorStage({
     return () => {
       cancelled = true;
     };
-  }, [stage.objects, ready, t]);
+  }, [stage.objects, ready, t, resolveStageAssetSource]);
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
@@ -1589,6 +1607,11 @@ export function DirectorStage({
               {assetNotice && (
                 <p className="cw-domain-note" role="status">
                   {assetNotice}
+                </p>
+              )}
+              {node.data.assetState === "missing" && (
+                <p className="cw-domain-note" role="status">
+                  {t("editors.stage.ui.assetsMissing")}
                 </p>
               )}
               <div className="cw-stage-object-list">

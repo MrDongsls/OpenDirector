@@ -271,6 +271,7 @@ export const editors = {
   "editors.stage.ui.assetNotice":
     "此人物没有动画数据，但仍会跟随摄像机、分镜和变换关键帧。",
   "editors.stage.ui.assetUnavailable": "导入素材不可用，请重新打开工程或再次导入。",
+  "editors.stage.ui.assetsMissing": "部分舞台素材已不可用：定格或模型资产缺失，请检查素材或重新应用舞台。",
   "editors.stage.ui.assetLoadFailed":
     "无法加载「{name}」。文件可能损坏，或引用了外部资源。",
   "editors.stage.ui.assetCorrupt":

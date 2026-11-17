@@ -305,6 +305,8 @@ export const editors = {
     "This character has no animation data; it still follows camera, storyboard, and transform keyframes.",
   "editors.stage.ui.assetUnavailable":
     "The imported asset is unavailable. Reopen the project or import it again.",
+  "editors.stage.ui.assetsMissing":
+    "Some stage media is unavailable: the captured still or a model asset is missing. Check the assets or apply the stage again.",
   "editors.stage.ui.assetLoadFailed":
     "Could not load “{name}”. The file may be corrupt or reference external resources.",
   "editors.stage.ui.assetCorrupt":

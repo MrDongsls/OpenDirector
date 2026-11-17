@@ -350,6 +350,38 @@ test("director stage reads keep pinned identity when media bytes are unavailable
     )!.asset,
     imported.asset,
   );
+  // An unreadable pin surfaces as a visible missing-asset state.
+  const stageNode = document.nodes.find(
+    (node) => node.data.localStage === stage,
+  )!;
+  assert.equal(stageNode.data.assetState, "missing");
+});
+
+test("director stage reads report ready when every pinned asset resolves", async () => {
+  const source = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/creation-project.json", import.meta.url),
+      "utf8",
+    ),
+  ) as ProjectSnapshot;
+  const client = new CreationClient(source.project.id);
+  client.install(source);
+  client.mediaUrl = async (id) => `blob:${id}`;
+  client.view = async () => ({
+    projectId: client.id,
+    clientId: crypto.randomUUID(),
+    viewport: { x: 0, y: 0, zoom: 1 },
+    selectedItemIds: [],
+    activeEditorId: null,
+    playheads: [],
+    generationCounts: {},
+  });
+  const document = await new CreationProjection(client).read();
+  const stageNode = document.nodes.find((node) =>
+    node.data.localStage?.objects.some((object) => object.kind === "gltf"),
+  );
+  assert.ok(stageNode, "director stage node missing from projection");
+  assert.equal(stageNode.data.assetState, "ready");
 });
 
 /** The projection's save path for a director node, isolated from canvas state. */

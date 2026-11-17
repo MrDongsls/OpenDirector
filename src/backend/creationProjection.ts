@@ -412,33 +412,39 @@ export class CreationProjection {
         };
       case "director":
         {
-          const objects = await Promise.all(
-            doc.data.objects.map(async (object) =>
-              object.kind === "gltf" && object.asset
-                ? {
-                    ...object,
-                    source: await this.client
-                      .mediaUrl(object.asset.assetId)
-                      .catch(() => undefined),
-                  }
-                : object,
-            ),
+          const resolved = await Promise.all(
+            doc.data.objects.map(async (object) => {
+              if (object.kind !== "gltf" || !object.asset)
+                return { object, source: undefined };
+              const source = await this.client
+                .mediaUrl(object.asset.assetId)
+                .catch(() => undefined);
+              return { object: { ...object, source }, source };
+            }),
           );
         const stillSrc = doc.data.still
           ? await this.client
               .mediaUrl(doc.data.still.assetId)
               .catch(() => undefined)
           : undefined;
+        // An unreadable pin must surface as a visible missing-asset state,
+        // not an unexplained empty scene or blank thumbnail.
+        const missing =
+          (doc.data.still ? stillSrc === undefined : false) ||
+          resolved.some(
+            (entry) => entry.source === undefined && entry.object.asset,
+          );
         return {
           external: { externalType: "director-stage" },
           localStage: parseLocalStageValue({
             format: "opendirector-local-stage",
             version: 2,
             ...doc.data,
-            objects,
+            objects: resolved.map((entry) => entry.object),
           }),
           ...(doc.data.still ? { stillAsset: doc.data.still } : {}),
           ...(stillSrc ? { src: stillSrc } : {}),
+          assetState: missing ? "missing" : "ready",
         };
         }
       case "layers":
