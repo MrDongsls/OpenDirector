@@ -771,3 +771,75 @@
   border: 1px solid #6b4fa0;
   border-radius: 4px;
 }
+/* Compact tool buttons: uniform height, quiet borders, clear pressed state. */
+.cw-stage-console .cw-stage-topbar button,
+.cw-stage-console .cw-stage-left button,
+.cw-stage-console .cw-stage-right button,
+.cw-stage-console .cw-stage-bottom button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid #3a3346;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #cbb9dc;
+  background: #221c2e;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.cw-stage-console button:hover:not(:disabled) {
+  border-color: #6b4fa0;
+  color: #f0e8f8;
+}
+.cw-stage-console button:active:not(:disabled) {
+  background: #2e2540;
+}
+.cw-stage-console button[aria-pressed="true"] {
+  border-color: #6b4fa0;
+  color: #f0e8f8;
+  background: #322547;
+}
+.cw-stage-console button:disabled {
+  opacity: 0.45;
+}
+/* Camera preset and move grids in the Cameras tab. */
+.cw-stage-left h4 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  color: #9d8db2;
+}
+.cw-stage-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+.cw-stage-preset-grid button {
+  width: 100%;
+}
+/* Viewfinder FOV bar floating under the top bar. */
+.cw-stage-fovbar {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 18;
+  padding: 6px 14px;
+  border: 1px solid #3a3346;
+  border-radius: 8px;
+  background: #120e19e6;
+  font-size: 12px;
+}
+.cw-stage-fovbar label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cw-stage-fovbar input[type="range"] {
+  width: 220px;
+}
+/* In the fullscreen console the drawer floats above the panels and sits
+ * left of the right inspector so nothing hides its list. */
+.cw-stage-console .cw-stage-drawer {
+  z-index: 16;
+  right: 318px;
+  top: 64px;
+}

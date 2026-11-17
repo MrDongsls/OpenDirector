@@ -1543,16 +1543,18 @@ export function DirectorStage({
           : stills,
     );
   // Drawer edits (captures, deletions) are unsaved work the close guard
-  // must catch even when the stage itself is untouched.
+  // must catch even when the stage itself is untouched. Both baselines
+  // advance on every mid-session prepare, so a committed export stops
+  // counting as unsaved.
   const stillsDirty =
-    stills.length !== (node.data.stills?.length ?? 0) ||
+    stills.length !== committedStills.current.length ||
     stills.some(
       (item, index) =>
-        !!item.capture ||
-        item.asset?.assetId !== node.data.stills?.[index]?.asset?.assetId,
+        item.capture !== committedStills.current[index]?.capture ||
+        item.asset?.assetId !== committedStills.current[index]?.asset?.assetId,
     );
-  const dirty =
-    stillsDirty || !sameLocalStage(loadedStage.current, stage);
+  const stageBaseline = committedStage.current ?? loadedStage.current;
+  const dirty = stillsDirty || !sameLocalStage(stageBaseline, stage);
   const requestClose = () => {
     if (dirty && !commit.saving) setConfirmingClose(true);
     else commit.close();
