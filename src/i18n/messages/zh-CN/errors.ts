@@ -441,6 +441,8 @@ export const errors = {
   "errors.archive.canvasFallback": "画布",
   "errors.archive.transientMedia":
     "画布素材仍使用临时地址，未导出不完整的副本。",
+  "errors.archive.stageMediaMissing":
+    "舞台素材「{title}」已无法读取，未导出不完整的副本。",
   "errors.archive.noManifest":
     "这不是 OpenDirector 画布压缩包：缺少 manifest.json。",
   "errors.archive.manifestInvalid": "画布压缩包的 manifest.json 无法解析。",

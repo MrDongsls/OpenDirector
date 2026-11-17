@@ -18,8 +18,13 @@ import {
   transferClipboardMedia,
   type RegisteredMedia,
 } from "../src/canvas/clipboardMedia.ts";
-import { createNode } from "../src/canvas/model.ts";
+import {
+  buildCanvasArchive,
+  readCanvasArchive,
+} from "../src/canvas/canvasArchive.ts";
+import { createDocument, createNode } from "../src/canvas/model.ts";
 import type { CanvasFragment } from "../src/canvas/operations.ts";
+import { readZip } from "../src/canvas/zipArchive.ts";
 import type { ProjectSnapshot } from "../src/contracts/generated.ts";
 import type { AssetRef } from "../src/contracts/generated.ts";
 
@@ -636,4 +641,96 @@ test("an unreadable still pin falls back to the carried capture bytes", async ()
   // capture bytes the paste still carries.
   assert.equal(data.stillAsset, undefined);
   assert.equal(data.stillCapture, "data:image/png;base64,aVBoTgc=");
+});
+
+const archiveRead = async (src: string) =>
+  new Blob([Uint8Array.from(atob(src.split(",")[1]!), (c) => c.charCodeAt(0))], {
+    type: /^data:([^;]+)/.exec(src)![1],
+  });
+
+test("canvas archives bundle stage models and re-home stage pins", async () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    objects: [
+      ...createLocalStage().objects,
+      {
+        ...createLocalStage().objects[0]!,
+        id: "walker",
+        kind: "gltf",
+        name: "Walker",
+        role: "character",
+        format: "glb",
+        source: "data:application/octet-stream;base64,R0xGQg==",
+        asset,
+        animationNames: ["Walk"],
+        hasAnimation: true,
+        motionClips: [],
+      },
+    ],
+  });
+  const document = createDocument("With stage");
+  document.nodes = [
+    createNode("external", { x: 0, y: 0 }, {
+      title: "Stage board",
+      localStage: stage,
+      src: "data:image/png;base64,aVBoTgc=",
+      stillAsset: stillRef,
+    }),
+  ];
+  const archive = await buildCanvasArchive(document, { read: archiveRead });
+  assert.deepEqual(archive.assets, [
+    "assets/Stage_board.png",
+    "assets/Walker",
+  ]);
+  const files = await readZip(archive.blob);
+  const manifest = JSON.parse(
+    new TextDecoder().decode(files.get("manifest.json")!),
+  );
+  assert.equal(manifest.formatVersion, 4);
+
+  const contents = await readCanvasArchive(archive.blob);
+  assert.equal(contents.assets, 2);
+  const data = contents.document.nodes[0]!.data;
+  // The restored bytes become the capture the importing project's save
+  // registers; the exporting project's pins cannot survive the trip.
+  assert.equal(data.stillAsset, undefined);
+  assert.match(data.stillCapture!, /^data:image\/png;base64,/);
+  const walker = data.localStage!.objects.find(
+    (object) => object.kind === "gltf",
+  )!;
+  assert.match(walker.source!, /^data:application\/octet-stream;base64,/);
+  assert.equal(walker.asset, undefined);
+});
+
+test("canvas archives refuse stage pins whose bytes are unreachable", async () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    objects: [
+      ...createLocalStage().objects,
+      {
+        ...createLocalStage().objects[0]!,
+        id: "walker",
+        kind: "gltf",
+        name: "Walker",
+        role: "character",
+        format: "glb",
+        asset,
+        animationNames: ["Walk"],
+        hasAnimation: true,
+        motionClips: [],
+      },
+    ],
+  });
+  const document = createDocument("With stage");
+  document.nodes = [
+    createNode("external", { x: 0, y: 0 }, {
+      title: "Stage board",
+      localStage: stage,
+      stillAsset: stillRef,
+    }),
+  ];
+  await assert.rejects(
+    buildCanvasArchive(document, { read: archiveRead }),
+    /舞台素材/,
+  );
 });

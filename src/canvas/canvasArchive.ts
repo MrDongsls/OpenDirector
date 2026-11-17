@@ -5,6 +5,7 @@ import {
   timelineHasTextResources,
 } from "./timeline.ts";
 import { parseDocument } from "./storage.ts";
+import { stageMediaItems } from "./stageMedia.ts";
 import { createZip, readZip, type ZipEntry } from "./zipArchive.ts";
 import { tNow } from "../i18n/messages.ts";
 
@@ -12,9 +13,10 @@ import { tNow } from "../i18n/messages.ts";
  * `canvas.json` is the document and `assets/` holds the media bytes. Keeps the
  * document readable and stops embedded base64 from bloating a single file. */
 export const CANVAS_ARCHIVE_MAGIC = "opendirector-canvas";
-/** v3 protects timeline text and its bundled font/source resources.
- * v2 records generation provenance; v1/v2 remain readable for older documents. */
-export const CANVAS_ARCHIVE_VERSION = 3;
+/** v4 bundles director-stage model resources. v3 protects timeline text and
+ * its bundled font/source resources. v2 records generation provenance; v1/v2
+ * remain readable for older documents. */
+export const CANVAS_ARCHIVE_VERSION = 4;
 export const CANVAS_DOCUMENT_ENTRY = "canvas.json";
 export const CANVAS_ASSET_DIRECTORY = "assets";
 
@@ -50,6 +52,13 @@ function hasText(document: CanvasDocument): boolean {
   return [...document.nodes, ...(document.hiddenNodes ?? [])].some(
     (node) =>
       node.data.timeline && timelineHasTextResources(node.data.timeline),
+  );
+}
+
+/** Stage documents carry model bytes the document itself cannot inline. */
+function hasStageMedia(document: CanvasDocument): boolean {
+  return [...document.nodes, ...(document.hiddenNodes ?? [])].some(
+    (node) => node.data.localStage,
   );
 }
 
@@ -170,6 +179,11 @@ export async function buildCanvasArchive(
 ): Promise<CanvasArchive> {
   const read = options.read ?? readMedia;
   const copy = structuredClone(document);
+  // Stage items are read before the generic walk rewrites the still's preview.
+  const stageItems = [...copy.nodes, ...(copy.hiddenNodes ?? [])].map((node) => ({
+    node,
+    items: stageMediaItems(node.data),
+  }));
   const paths = new Map<string, Promise<string>>();
   const byDigest = new Map<string, string>();
   const taken = new Set<string>();
@@ -242,6 +256,20 @@ export async function buildCanvasArchive(
     view.src = await register(view.src, view.title, view.mimeType);
   }
   await visit(copy, document.title, "");
+  for (const { node, items } of stageItems)
+    for (const item of items) {
+      if (!item.url) {
+        // A saved pin whose bytes the page can no longer read cannot ride;
+        // an unsaved draft has nothing to bundle and stays as it is.
+        if (item.asset && !(item.role === "still" && node.data.stillCapture))
+          throw new Error(
+            tNow("errors.archive.stageMediaMissing", { title: item.title }),
+          );
+        continue;
+      }
+      if (item.role === "model" && item.object)
+        item.object.source = await register(item.url, item.title, "");
+    }
 
   const canvasJson = `${JSON.stringify(copy, null, 2)}\n`;
   if (/:\s*"blob:/i.test(canvasJson))
@@ -249,7 +277,11 @@ export async function buildCanvasArchive(
 
   const manifest = {
     magic: CANVAS_ARCHIVE_MAGIC,
-    formatVersion: hasText(copy) ? CANVAS_ARCHIVE_VERSION : 2,
+    formatVersion: hasStageMedia(copy)
+      ? CANVAS_ARCHIVE_VERSION
+      : hasText(copy)
+        ? 3
+        : 2,
     ...(hasText(copy)
       ? { requiredCapabilities: [TIMELINE_TEXT_CAPABILITY] }
       : {}),
@@ -461,6 +493,37 @@ export async function readCanvasArchive(
       view.src?.startsWith(`${CANVAS_ASSET_DIRECTORY}/`) && files.has(view.src),
   );
   visit(document);
+  for (const node of [...document.nodes, ...(document.hiddenNodes ?? [])]) {
+    if (!node.data.localStage) continue;
+    for (const object of node.data.localStage.objects) {
+      if (object.kind !== "gltf" || typeof object.source !== "string") continue;
+      if (/^data:/i.test(object.source)) continue;
+      if (/^blob:/i.test(object.source))
+        throw new Error(tNow("errors.archive.transientReference"));
+      const bytes = files.get(object.source);
+      if (!bytes)
+        throw new Error(
+          tNow("errors.archive.missingMedia", { entry: object.source }),
+        );
+      const type = mimeTypes.get(object.source) || "application/octet-stream";
+      const path = object.source;
+      object.source = `data:${type};base64,${base64(bytes)}`;
+      restored.add(path);
+      // Stage pins name the exporting project; the restored bytes re-register
+      // in whatever project imports this archive.
+      delete object.asset;
+    }
+    // The bundled still preview is the node's restored src. It becomes the
+    // carried capture the importing project's save registers; the exporting
+    // project's pin never survives the parse boundary anyway.
+    delete node.data.stillAsset;
+    if (
+      typeof node.data.src === "string" &&
+      /^data:/i.test(node.data.src) &&
+      node.data.stillCapture === undefined
+    )
+      node.data.stillCapture = node.data.src;
+  }
   for (const { view, identity } of bundledViews) {
     const original = view.asset;
     view.importIdentity = original

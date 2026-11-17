@@ -578,6 +578,8 @@ export const errors = {
   "errors.archive.canvasFallback": "Canvas",
   "errors.archive.transientMedia":
     "The canvas media still uses a temporary URL, so no incomplete copy was exported.",
+  "errors.archive.stageMediaMissing":
+    "Stage media \"{title}\" is no longer readable, so no incomplete copy was exported.",
   "errors.archive.noManifest":
     "This is not an OpenDirector canvas archive: manifest.json is missing.",
   "errors.archive.manifestInvalid":
