@@ -156,7 +156,10 @@ export function NodeFrame({
             <CanvasIcon name="chevronDown" size={11} />
           </button>
         )}
-      {nodePorts(kind).target && (
+      {/* External stages never start interactive connections, but their
+          publication and assembly edges still need non-connectable proxy
+          handles, or React Flow drops every edge touching the node. */}
+      {(nodePorts(kind).target || kind === "external") && (
         <Handle
           id="in"
           type="target"
@@ -165,7 +168,7 @@ export function NodeFrame({
           className="cw-port cw-proxy-port"
         />
       )}
-      {nodePorts(kind).source && (
+      {(nodePorts(kind).source || kind === "external") && (
         <Handle
           id="out"
           type="source"
