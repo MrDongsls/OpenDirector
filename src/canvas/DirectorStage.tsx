@@ -222,6 +222,7 @@ function cloneImportedAsset(
 }
 async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
   const loaded = await new GLTFLoader().loadAsync(source);
+  recordAuthoredEmissive(loaded.scene);
   return { scene: loaded.scene, animations: loaded.animations };
 }
 /** Waits for every model the stage needs. The first model whose bytes are
@@ -248,6 +249,37 @@ async function awaitStageAssets(
   }
   return loaded;
 }
+/** The emissive a glTF authored on a material, recorded once per load.
+ * SkeletonUtils clones share materials with the cached scene, so selection
+ * highlighting and export must restore this value rather than zero it. */
+interface AuthoredEmissive {
+  hex: number;
+  intensity: number;
+}
+function recordAuthoredEmissive(scene: THREE.Object3D) {
+  scene.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : [child.material];
+    for (const material of materials)
+      if (
+        material instanceof THREE.MeshStandardMaterial &&
+        material.userData.authoredEmissive === undefined
+      )
+        material.userData.authoredEmissive = {
+          hex: material.emissive.getHex(),
+          intensity: material.emissiveIntensity,
+        } satisfies AuthoredEmissive;
+  });
+}
+function restoreAuthoredEmissive(material: THREE.MeshStandardMaterial) {
+  const authored = material.userData.authoredEmissive as
+    | AuthoredEmissive
+    | undefined;
+  material.emissive.setHex(authored?.hex ?? 0x000000);
+  material.emissiveIntensity = authored?.intensity ?? 1;
+}
 function applySelectionHighlight(
   root: THREE.Object3D,
   selected: string | null,
@@ -262,8 +294,12 @@ function applySelectionHighlight(
         ? child.material
         : [child.material];
       for (const material of materials)
-        if (material instanceof THREE.MeshStandardMaterial)
-          material.emissive.set(highlighted ? "#1e1536" : "#000000");
+        if (material instanceof THREE.MeshStandardMaterial) {
+          if (highlighted) {
+            material.emissive.set("#1e1536");
+            material.emissiveIntensity = 1;
+          } else restoreAuthoredEmissive(material);
+        }
     }
   });
 }
@@ -1332,7 +1368,7 @@ export function DirectorStage({
           if (!material) {
             material = source.clone();
             if (material instanceof THREE.MeshStandardMaterial)
-              material.emissive.set("#000000");
+              restoreAuthoredEmissive(material);
             materials.set(source, material);
           }
           return material;
