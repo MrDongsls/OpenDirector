@@ -1622,6 +1622,110 @@ export function DirectorStage({
       />
       {aspectMask && <div className="cw-stage-mask" aria-hidden="true" />}
       {cameraPreview && <div className="cw-stage-pipframe" aria-hidden="true" />}
+      {drawerOpen && (
+        <section
+          className="cw-stage-drawer"
+          aria-label={t("editors.stage.ui.shotMaterials")}
+        >
+          <header className="cw-stage-drawer-head">
+            <h4>{t("editors.stage.ui.shotMaterials")}</h4>
+            <span className="cw-stage-drawer-count">{stills.length}</span>
+            <button
+              aria-label={t("editors.stage.ui.closeDrawer")}
+              onClick={() => setDrawerOpen(false)}
+            >
+              ×
+            </button>
+          </header>
+          <div className="cw-stage-drawer-toolbar">
+            <label>
+              <input
+                type="checkbox"
+                disabled={!stills.length}
+                checked={
+                  !!stills.length && selectedStills.size === stills.length
+                }
+                onChange={(event) =>
+                  setSelectedStills(
+                    event.target.checked
+                      ? new Set(stills.map((item) => item.id))
+                      : new Set(),
+                  )
+                }
+              />
+              {t("editors.stage.ui.selectAllStills")}
+            </label>
+            <span>
+              {t("editors.stage.ui.selectedStillsCount", {
+                count: selectedStills.size,
+              })}
+            </span>
+          </div>
+          <ul className="cw-stage-drawer-list">
+            {stills.map((item, index) => {
+              const src = item.capture ?? item.src;
+              return (
+                <li key={item.id}>
+                  <div className="cw-stage-drawer-item">
+                    <input
+                      type="checkbox"
+                      checked={selectedStills.has(item.id)}
+                      onChange={() => toggleStill(item.id)}
+                      aria-label={stillName(index)}
+                    />
+                    <button
+                      className="cw-stage-drawer-preview"
+                      onClick={() => setPreviewStillId(item.id)}
+                      disabled={!src}
+                      aria-label={t("editors.stage.ui.previewStill", {
+                        name: stillName(index),
+                      })}
+                    >
+                      {src ? (
+                        <img src={src} alt="" />
+                      ) : (
+                        <span className="cw-stage-drawer-missing">
+                          {t("editors.stage.ui.stillMissing")}
+                        </span>
+                      )}
+                      <span className="cw-stage-drawer-caption">
+                        <span>{stillName(index)}</span>
+                        <span>{stage.aspectRatio}</span>
+                      </span>
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+            {!stills.length && (
+              <li className="cw-stage-drawer-empty">
+                {t("editors.stage.ui.stillEmpty")}
+              </li>
+            )}
+          </ul>
+          <footer className="cw-stage-drawer-actions">
+            <button
+              disabled={!selectedStills.size}
+              onClick={deleteSelectedStills}
+            >
+              {t("editors.stage.ui.deleteSelectedStills")}
+            </button>
+            <button
+              disabled={!selectedStills.size}
+              onClick={() => void downloadSelectedStills()}
+            >
+              {t("editors.stage.ui.downloadSelectedStills")}
+            </button>
+            <button
+              className="cw-stage-drawer-primary"
+              disabled={!selectedStills.size}
+              onClick={() => void addSelectedStillsToCanvas()}
+            >
+              {t("editors.stage.ui.addStillsToCanvas")}
+            </button>
+          </footer>
+        </section>
+      )}
       <fieldset className="cw-stage-panels" disabled={renderProgress !== null}>
         <header className="cw-stage-topbar">
           <div className="cw-stage-identity">
