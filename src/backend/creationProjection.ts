@@ -106,6 +106,9 @@ export class CreationProjection {
   private importHandles = new Map<string, string>();
   private timelineImportSources = new Map<string, string>();
   private masks = new Map<string, Promise<string>>();
+  /** Stills imported from a node's transient capture, keyed by node id. The
+   * matching capture is cleared from the document once its save commits. */
+  private importedStills = new Map<string, { capture: string; still: AssetRef }>();
   readonly client: CreationClient;
   constructor(client: CreationClient) {
     this.client = client;
@@ -1315,6 +1318,11 @@ export class CreationProjection {
               fresh: true,
             })
           : node.data.stillAsset;
+        if (node.data.stillCapture && still)
+          this.importedStills.set(node.id, {
+            capture: node.data.stillCapture,
+            still,
+          });
         const {
           format: _format,
           version: _version,
@@ -2184,9 +2192,31 @@ export class CreationProjection {
     // Business acknowledgement cannot be undone by a view preference failure.
     this.basis = this.client.snapshot;
     this.baseline = document;
+    this.clearImportedStills(document);
     if (options.saveView === false) return operations.length > 0;
     await this.saveView(document);
     return operations.length > 0;
+  }
+
+  /** Removes a node's transient still capture once the committed document
+   * pins the asset those bytes registered. The saved document aliases the
+   * caller's live snapshot, so the spent field cannot come back to register
+   * a duplicate in a later session. Value-matched so a newer capture that
+   * landed while the save was in flight stays. */
+  private clearImportedStills(document: CanvasDocument) {
+    if (!this.importedStills.size) return;
+    const nodes = new Map(
+      [...document.nodes, ...(document.hiddenNodes ?? [])].map((node) => [
+        node.id,
+        node,
+      ]),
+    );
+    for (const [id, entry] of [...this.importedStills]) {
+      const node = nodes.get(id);
+      if (node?.data.stillCapture === entry.capture)
+        delete node.data.stillCapture;
+      this.importedStills.delete(id);
+    }
   }
 
   /** View state is independent of the business commit; panning only needs this. */

@@ -766,3 +766,68 @@ test("canvas archives refuse stage pins whose bytes are unreachable", async () =
     /舞台素材/,
   );
 });
+
+test("committed still captures are cleared instead of re-registering later", async () => {
+  const source = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/creation-project.json", import.meta.url),
+      "utf8",
+    ),
+  ) as ProjectSnapshot;
+  const snapshot: ProjectSnapshot = {
+    ...source,
+    canvasItems: [],
+    generationSpecs: [],
+    references: [],
+    editorDocuments: [],
+    jobs: [],
+    results: [],
+  };
+  const client = new CreationClient(snapshot.project.id);
+  client.install(snapshot);
+  client.mediaUrl = async (id) => `blob:${id}`;
+  client.assetForSource = () => undefined;
+  client.view = async () => ({
+    projectId: client.id,
+    clientId: crypto.randomUUID(),
+    viewport: { x: 0, y: 0, zoom: 1 },
+    selectedItemIds: [],
+    activeEditorId: null,
+    playheads: [],
+    generationCounts: {},
+  });
+  client.batch = async () => undefined;
+  const importedImages: string[] = [];
+  client.importBlob = async (_blob, name, kind) => {
+    importedImages.push(`${kind}:${name}`);
+    return {
+      assetId: `still-${importedImages.length}`,
+      revision: 1,
+      fingerprint: `sha256:${importedImages.length}`,
+      kind,
+    };
+  };
+  const document = createDocument("Stage project");
+  document.id = client.id;
+  const node = createNode("external", { x: 0, y: 0 }, {
+    title: "Stage board",
+    localStage: createLocalStage(),
+    stillCapture: "data:image/png;base64,aVBoTgc=",
+  });
+  document.nodes = [node];
+  const projection = new CreationProjection(client);
+  projection.baseline = await projection.read();
+  projection.basis = snapshot;
+  await projection.save(document);
+  assert.deepEqual(importedImages, ["image:Stage board.png"]);
+  // The spent capture leaves the saved document, which aliases the live one.
+  assert.equal(node.data.stillCapture, undefined);
+
+  // A reopened session has neither the projection's import cache nor its
+  // dedupe: a surviving capture would register a duplicate still here.
+  const reopened = new CreationProjection(client);
+  reopened.baseline = await reopened.read();
+  reopened.basis = client.snapshot;
+  await reopened.save(document);
+  assert.deepEqual(importedImages, ["image:Stage board.png"]);
+});
