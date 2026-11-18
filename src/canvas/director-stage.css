@@ -562,12 +562,20 @@
   margin-bottom: 7px;
   color: #b9b7c7;
 }
-.cw-stage-vector label {
+.cw-stage-axis {
   display: flex;
   flex-direction: column;
   gap: 4px;
   color: #9995ad;
   font-size: 10px;
+}
+.cw-stage-axis input[type="number"] {
+  width: 100% !important;
+  padding: 5px !important;
+  min-width: 0;
+}
+.cw-stage-axis .cw-control-slider {
+  width: 100%;
 }
 .cw-stage-vector input {
   width: 100% !important;
@@ -870,4 +878,48 @@
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
+}
+/* Split live preview: camera tabs over the right pane, a draggable
+ * divider at the split ratio. */
+.cw-stage-split-tabs {
+  position: absolute;
+  top: 64px;
+  right: 14px;
+  z-index: 7;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.cw-stage-split-tabs button {
+  pointer-events: auto;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid #3a3346;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #cbb9dc;
+  background: #221c2ee6;
+}
+.cw-stage-split-tabs button[aria-selected="true"] {
+  border-color: #8e76d1;
+  color: #f0e9f8;
+}
+.cw-stage-split-divider {
+  position: absolute;
+  top: 56px;
+  bottom: 200px;
+  width: 10px;
+  margin-left: -5px;
+  z-index: 7;
+  cursor: col-resize;
+  background: linear-gradient(
+    to right,
+    transparent 4px,
+    #8e76d1 4px,
+    #8e76d1 6px,
+    transparent 6px
+  );
+  touch-action: none;
 }

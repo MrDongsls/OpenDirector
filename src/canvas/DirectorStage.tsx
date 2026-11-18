@@ -15,6 +15,7 @@ import {
   parseLocalStageValue,
   probeStageAsset,
   sampleStage,
+  sampleStageCamera,
   editStageObjectAt,
   editStageCameraAt,
   captureStageFrame,
@@ -410,6 +411,19 @@ function VectorFields({
   min?: number;
 }) {
   const { t } = useI18n();
+  // Sliders trade range for immediacy: the number input stays for exact
+  // values outside the drag band.
+  const [sliderMin, sliderMax] = rotation
+    ? ([-180, 180] as const)
+    : min !== undefined
+      ? ([min, 4] as const)
+      : ([-20, 20] as const);
+  const display = (axis: keyof Vector3Value) =>
+    Number(
+      (rotation ? THREE.MathUtils.radToDeg(value[axis]) : value[axis]).toFixed(
+        3,
+      ),
+    );
   return (
     <fieldset className="cw-stage-vector">
       <legend>
@@ -417,19 +431,31 @@ function VectorFields({
         {rotation ? t("editors.stage.ui.degreesSuffix") : ""}
       </legend>
       {axes.map((axis) => (
-        <label key={axis}>
-          {axis.toUpperCase()}
+        <div className="cw-stage-axis" key={axis}>
+          <span aria-hidden="true">{axis.toUpperCase()}</span>
+          <ControlSlider
+            aria-label={`${label} ${axis.toUpperCase()} ${t(
+              "editors.stage.ui.sliderSuffix",
+            )}`}
+            min={sliderMin}
+            max={sliderMax}
+            step={rotation ? 1 : 0.1}
+            value={Math.min(sliderMax, Math.max(sliderMin, display(axis)))}
+            onChange={(event) => {
+              const raw = Number(event.target.value);
+              if (Number.isFinite(raw))
+                onChange({
+                  ...value,
+                  [axis]: rotation ? THREE.MathUtils.degToRad(raw) : raw,
+                });
+            }}
+          />
           <input
             aria-label={`${label} ${axis.toUpperCase()}`}
             type="number"
             step={rotation ? 5 : 0.1}
             min={min}
-            value={Number(
-              (rotation
-                ? THREE.MathUtils.radToDeg(value[axis])
-                : value[axis]
-              ).toFixed(3),
-            )}
+            value={display(axis)}
             onChange={(event) => {
               const raw = Number(event.target.value);
               if (Number.isFinite(raw) && (min === undefined || raw >= min))
@@ -439,7 +465,7 @@ function VectorFields({
                 });
             }}
           />
-        </label>
+        </div>
       ))}
     </fieldset>
   );
@@ -493,6 +519,16 @@ export function DirectorStage({
   const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
   const [leftTab, setLeftTab] = useState<"characters" | "objects" | "cameras" | "background">("characters");
   const [cameraPreview, setCameraPreview] = useState(false);
+  const [splitView, setSplitView] = useState(false);
+  const [splitRatio, setSplitRatio] = useState(0.5);
+  /** Split pane source: null runs the storyboard/active sample. */
+  const [splitCameraId, setSplitCameraId] = useState<string | null>(null);
+  const splitRef = useRef({
+    open: false,
+    ratio: 0.5,
+    cameraId: null as string | null,
+  });
+  splitRef.current = { open: splitView, ratio: splitRatio, cameraId: splitCameraId };
   const [aspectMask, setAspectMask] = useState(false);
   const cameraPreviewRef = useRef(false);
   cameraPreviewRef.current = cameraPreview;
@@ -868,10 +904,12 @@ export function DirectorStage({
     };
     renderer.domElement.addEventListener("webglcontextlost", contextLost);
     let frame = 0;
-    const poseCameraFor = () => {
+    const poseCameraFor = (cameraId?: string, aspect?: number) => {
       const size = stageOutputSize(stageRef.current.aspectRatio);
-      const pose = sampleStage(stageRef.current, timeRef.current).camera;
-      pipCamera.aspect = size.width / size.height;
+      const pose = cameraId
+        ? sampleStageCamera(stageRef.current, cameraId, timeRef.current, t)
+        : sampleStage(stageRef.current, timeRef.current).camera;
+      pipCamera.aspect = aspect ?? size.width / size.height;
       pipCamera.fov = liveFovRef.current ?? pose.fov;
       pipCamera.position.set(pose.position.x, pose.position.y, pose.position.z);
       applyRoll(pipCamera, pose);
@@ -880,6 +918,31 @@ export function DirectorStage({
     };
     const render = () => {
       renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
+      if (splitRef.current.open) {
+        // Split view: the working orbit keeps the left share, the chosen
+        // rig (storyboard falls back to the active sample) fills the
+        // right pane at the pane's own aspect.
+        const { ratio, cameraId } = splitRef.current;
+        const width = renderer.domElement.width;
+        const height = renderer.domElement.height;
+        const splitWidth = Math.round(width * ratio);
+        const paneAspect = (width - splitWidth) / height;
+        renderer.setScissorTest(true);
+        renderer.setViewport(0, 0, splitWidth, height);
+        renderer.setScissor(0, 0, splitWidth, height);
+        renderer.render(scene, camera);
+        renderer.setViewport(splitWidth, 0, width - splitWidth, height);
+        renderer.setScissor(splitWidth, 0, width - splitWidth, height);
+        renderer.render(
+          scene,
+          viewfinderRef.current
+            ? camera
+            : poseCameraFor(cameraId ?? undefined, paneAspect),
+        );
+        renderer.setScissorTest(false);
+        frame = requestAnimationFrame(render);
+        return;
+      }
       // Viewfinder renders the stage camera as the main view; the preview
       // pass keeps the orbit view so the working frame is never lost.
       if (viewfinderRef.current) {
@@ -1779,6 +1842,71 @@ export function DirectorStage({
       )}
       {aspectMask && <div className="cw-stage-mask" aria-hidden="true" />}
       {cameraPreview && <div className="cw-stage-pipframe" aria-hidden="true" />}
+      {splitView && (
+        <>
+          {/* The divider owns its pointer stream; the renderer below
+           * reads the ratio every frame. */}
+          <div
+            className="cw-stage-split-divider"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("editors.stage.ui.splitRatioAria")}
+            aria-valuenow={Math.round(splitRatio * 100)}
+            tabIndex={0}
+            style={{ left: `${splitRatio * 100}%` }}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId))
+                return;
+              const bounds = mount.current?.getBoundingClientRect();
+              if (!bounds) return;
+              const next =
+                (event.clientX - bounds.left) / bounds.width;
+              setSplitRatio(Math.min(0.8, Math.max(0.2, next)));
+            }}
+            onKeyDown={(event) => {
+              // Arrow keys nudge the split for keyboard users.
+              if (event.key === "ArrowLeft")
+                setSplitRatio((ratio) => Math.max(0.2, ratio - 0.05));
+              if (event.key === "ArrowRight")
+                setSplitRatio((ratio) => Math.min(0.8, ratio + 0.05));
+            }}
+          />
+          <div
+            className="cw-stage-split-tabs"
+            role="tablist"
+            style={{ left: `calc(${splitRatio * 100}% + 10px)` }}
+          >
+            {stage.shots.length ? (
+              <button
+                role="tab"
+                aria-selected={splitCameraId === null}
+                onClick={() => setSplitCameraId(null)}
+              >
+                {t("editors.stage.ui.exportSourceStoryboard")}
+              </button>
+            ) : null}
+            {stage.cameras.map((rig) => (
+              <button
+                key={rig.id}
+                role="tab"
+                aria-selected={splitCameraId === rig.id}
+                onClick={() => setSplitCameraId(rig.id)}
+              >
+                {rig.name}
+              </button>
+            ))}
+            <button
+              className="cw-stage-row-action"
+              onClick={() => setSplitView(false)}
+            >
+              {t("editors.stage.ui.splitExit")}
+            </button>
+          </div>
+        </>
+      )}
       {drawerOpen && (
         <section
           className="cw-stage-drawer"
@@ -2155,18 +2283,31 @@ export function DirectorStage({
               <button onClick={addCamera}>{t("editors.stage.ui.addCamera")}</button>
               <div className="cw-stage-object-list">
                 {stage.cameras.map((rig) => (
-                  <button
-                    key={rig.id}
-                    aria-pressed={stage.activeCameraId === rig.id}
-                    onClick={() =>
-                      edit((current) => ({
-                        ...current,
-                        activeCameraId: rig.id,
-                      }))
-                    }
-                  >
-                    {rig.name}
-                  </button>
+                  <div className="cw-stage-camera-row" key={rig.id}>
+                    <button
+                      aria-pressed={stage.activeCameraId === rig.id}
+                      onClick={() =>
+                        edit((current) => ({
+                          ...current,
+                          activeCameraId: rig.id,
+                        }))
+                      }
+                    >
+                      {rig.name}
+                    </button>
+                    <button
+                      className="cw-stage-row-action"
+                      aria-label={t("editors.stage.ui.splitPreview", {
+                        name: rig.name,
+                      })}
+                      onClick={() => {
+                        setSplitCameraId(rig.id);
+                        setSplitView(true);
+                      }}
+                    >
+                      ↗
+                    </button>
+                  </div>
                 ))}
               </div>
               <h4>{t("editors.stage.ui.cameraPresets")}</h4>
