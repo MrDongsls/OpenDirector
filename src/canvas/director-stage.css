@@ -883,8 +883,8 @@
  * divider at the split ratio. */
 .cw-stage-split-tabs {
   position: absolute;
-  top: 64px;
-  right: 14px;
+  top: 104px;
+  right: 318px;
   z-index: 7;
   display: flex;
   gap: 6px;
@@ -908,7 +908,7 @@
 }
 .cw-stage-split-divider {
   position: absolute;
-  top: 56px;
+  top: 100px;
   bottom: 200px;
   width: 10px;
   margin-left: -5px;

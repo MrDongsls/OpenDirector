@@ -2942,6 +2942,7 @@ export function DirectorStage({
                 <h4>{t("editors.stage.ui.helpTitle")}</h4>
                 <button
                   type="button"
+                  autoFocus
                   aria-label={t("editors.stage.ui.closeHelp")}
                   onClick={() => setHelpOpen(false)}
                 >

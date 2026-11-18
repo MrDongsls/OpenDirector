@@ -796,7 +796,7 @@ export function useWorkspaceInteraction(rt: WorkspaceRuntime) {
     // These components own their keyboard shortcuts and cancellation lifecycle.
     if (
       el.closest(
-        ".cw-composer-dock,.cw-composer-popover,.cw-text-window-backdrop,.cw-node-toolbar-anchor,.cw-domain-dialog,.cw-selection-menu,.cw-action-media-host,.cw-project-selector,.cw-project-dialog,.cw-settings-dialog,.cw-assistant-panel,.cw-context-menu,.cw-node-title-input,.cw-subject-description",
+        ".cw-composer-dock,.cw-composer-popover,.cw-text-window-backdrop,.cw-node-toolbar-anchor,.cw-domain-dialog,.cw-stage-console,.cw-selection-menu,.cw-action-media-host,.cw-project-selector,.cw-project-dialog,.cw-settings-dialog,.cw-assistant-panel,.cw-context-menu,.cw-node-title-input,.cw-subject-description",
       )
     )
       return;
