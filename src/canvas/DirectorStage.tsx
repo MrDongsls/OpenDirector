@@ -112,11 +112,39 @@ const vector = (value: THREE.Vector3): Vector3Value => ({
   y: value.y,
   z: value.z,
 });
+type CameraPresetId =
+  | "frontMedium" | "frontClose" | "frontWide" | "sideTrack" | "sideClose"
+  | "backMedium" | "overheadWide" | "highAngle" | "lowAngle" | "lowWide"
+  | "overShoulder" | "bird" | "dutch";
+const CAMERA_PRESETS: Record<CameraPresetId, { offset: Vector3Value; fov: number; roll?: number }> = {
+  frontMedium: { offset: { x: 0, y: 0.6, z: 6 }, fov: 45 },
+  frontClose: { offset: { x: 0, y: 0.5, z: 2.6 }, fov: 40 },
+  frontWide: { offset: { x: 0, y: 2.2, z: 11 }, fov: 50 },
+  sideTrack: { offset: { x: 6, y: 0.6, z: 0.6 }, fov: 45 },
+  sideClose: { offset: { x: 2.6, y: 0.4, z: 0.4 }, fov: 40 },
+  backMedium: { offset: { x: 0, y: 0.9, z: -6 }, fov: 45 },
+  overheadWide: { offset: { x: 0, y: 10, z: 3.5 }, fov: 50 },
+  highAngle: { offset: { x: 3.5, y: 3.5, z: 3.5 }, fov: 45 },
+  lowAngle: { offset: { x: 0, y: -0.5, z: 4 }, fov: 40 },
+  lowWide: { offset: { x: 0, y: -0.6, z: 7 }, fov: 75 },
+  overShoulder: { offset: { x: 1.1, y: 0.35, z: 2.1 }, fov: 42 },
+  bird: { offset: { x: 0, y: 13, z: 0.01 }, fov: 45 },
+  dutch: { offset: { x: 0, y: 0.8, z: 5.5 }, fov: 45, roll: 0.32 },
+};
 const axes = ["x", "y", "z"] as const;
 const titles: Record<StageObject["kind"], MessageKey> = {
   person: "editors.stage.ui.objectPerson",
   box: "editors.stage.ui.objectBox",
   sphere: "editors.stage.ui.objectSphere",
+  cylinder: "editors.stage.ui.objectCylinder",
+  cone: "editors.stage.ui.objectCone",
+  pyramid: "editors.stage.ui.objectPyramid",
+  torus: "editors.stage.ui.objectTorus",
+  plane: "editors.stage.ui.objectPlane",
+  capsule: "editors.stage.ui.objectCapsule",
+  disk: "editors.stage.ui.objectDisk",
+  arc: "editors.stage.ui.objectArc",
+  halfCylinder: "editors.stage.ui.objectHalfCylinder",
   gltf: "editors.stage.ui.objectGltf",
 };
 function applyTransform(object: THREE.Object3D, value: StageTransform) {
@@ -154,6 +182,33 @@ function buildObject(value: StageObject): THREE.Group {
   if (value.kind === "box") add(new THREE.BoxGeometry(1, 1, 1), 0, 0.5, 0);
   else if (value.kind === "sphere")
     add(new THREE.SphereGeometry(0.6, 32, 24), 0, 0.6, 0);
+  else if (value.kind === "cylinder")
+    add(new THREE.CylinderGeometry(0.5, 0.5, 1.4, 32), 0, 0.7, 0);
+  else if (value.kind === "cone")
+    add(new THREE.ConeGeometry(0.6, 1.4, 32), 0, 0.7, 0);
+  else if (value.kind === "pyramid")
+    add(new THREE.ConeGeometry(0.7, 1.2, 4), 0, 0.6, 0);
+  else if (value.kind === "torus")
+    add(new THREE.TorusGeometry(0.55, 0.2, 20, 40), 0, 0.75, 0);
+  else if (value.kind === "plane") {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = 0.02;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  } else if (value.kind === "capsule")
+    add(new THREE.CapsuleGeometry(0.35, 0.9, 8, 16), 0, 0.8, 0);
+  else if (value.kind === "disk")
+    add(new THREE.CylinderGeometry(0.8, 0.8, 0.12, 40), 0, 0.06, 0);
+  else if (value.kind === "arc")
+    add(new THREE.TorusGeometry(0.7, 0.16, 16, 40, Math.PI), 0, 0.16, 0);
+  else if (value.kind === "halfCylinder")
+    add(
+      new THREE.CylinderGeometry(0.6, 0.6, 1.2, 32, 1, false, 0, Math.PI),
+      0,
+      0.6,
+      0,
+    );
   else if (value.kind === "gltf") {
     material.transparent = true;
     material.opacity = 0.35;
@@ -318,6 +373,11 @@ function setCamera(runtime: StageRuntime, value: StageCamera) {
   runtime.controls.target.set(value.target.x, value.target.y, value.target.z);
   runtime.controls.update();
 }
+/** Pose cameras carry roll; apply it after lookAt by rotating on the view axis. */
+function applyRoll(camera: THREE.PerspectiveCamera, value: StageCamera) {
+  camera.lookAt(value.target.x, value.target.y, value.target.z);
+  camera.rotateZ(value.roll ?? 0);
+}
 function displayPose(runtime: StageRuntime, pose: StageSample) {
   setCamera(runtime, pose.camera);
   for (const child of runtime.root.children) {
@@ -436,6 +496,22 @@ export function DirectorStage({
   const [aspectMask, setAspectMask] = useState(false);
   const cameraPreviewRef = useRef(false);
   cameraPreviewRef.current = cameraPreview;
+  const [viewfinder, setViewfinder] = useState(false);
+  const viewfinderRef = useRef(false);
+  viewfinderRef.current = viewfinder;
+  const [helpOpen, setHelpOpen] = useState(false);
+  /** One-time first-add help: survives reloads and sibling editors. */
+  const helpSeen = useRef(
+    (() => {
+      try {
+        return localStorage.getItem("opendirector.stageHelp.v1") === "seen";
+      } catch {
+        return false;
+      }
+    })(),
+  );
+  const liveFov = useRef<number | null>(null);
+  const liveFovRef = liveFov;
   const [assetNotice, setAssetNotice] = useState("");
   /** Drawer draft over node.data.stills: pinned items plus unsaved captures,
    * committed as a whole by the next apply. */
@@ -792,27 +868,36 @@ export function DirectorStage({
     };
     renderer.domElement.addEventListener("webglcontextlost", contextLost);
     let frame = 0;
+    const poseCameraFor = () => {
+      const size = stageOutputSize(stageRef.current.aspectRatio);
+      const pose = sampleStage(stageRef.current, timeRef.current).camera;
+      pipCamera.aspect = size.width / size.height;
+      pipCamera.fov = liveFovRef.current ?? pose.fov;
+      pipCamera.position.set(pose.position.x, pose.position.y, pose.position.z);
+      applyRoll(pipCamera, pose);
+      pipCamera.updateProjectionMatrix();
+      return pipCamera;
+    };
     const render = () => {
       renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
-      renderer.render(scene, camera);
-      // Camera preview: a second pass drawing what the stage camera frames,
-      // exactly what the still and the MP4 will capture.
+      // Viewfinder renders the stage camera as the main view; the preview
+      // pass keeps the orbit view so the working frame is never lost.
+      if (viewfinderRef.current) {
+        renderer.render(scene, poseCameraFor());
+      } else {
+        renderer.render(scene, camera);
+      }
       if (cameraPreviewRef.current) {
-        const size = stageOutputSize(stageRef.current.aspectRatio);
-        const pose = sampleStage(stageRef.current, timeRef.current).camera;
-        pipCamera.aspect = size.width / size.height;
-        pipCamera.fov = pose.fov;
-        pipCamera.position.set(pose.position.x, pose.position.y, pose.position.z);
-        pipCamera.lookAt(pose.target.x, pose.target.y, pose.target.z);
-        pipCamera.updateProjectionMatrix();
+        const previewCamera = viewfinderRef.current ? camera : poseCameraFor();
+        previewCamera.aspect ??= camera.aspect;
         const width = Math.min(320, renderer.domElement.width * 0.25);
-        const height = width / pipCamera.aspect;
+        const height = width / (previewCamera.aspect || 16 / 9);
         const x = renderer.domElement.width - width - 12;
         const y = renderer.domElement.height - height - 64;
         renderer.setScissorTest(true);
         renderer.setViewport(x, y, width, height);
         renderer.setScissor(x, y, width, height);
-        renderer.render(scene, pipCamera);
+        renderer.render(scene, previewCamera);
         renderer.setScissorTest(false);
       }
       frame = requestAnimationFrame(render);
@@ -970,8 +1055,8 @@ export function DirectorStage({
   }, [selected, stage.objects, ready]);
   useEffect(() => {
     if (!runtime.current) return;
-    runtime.current.controls.enabled = renderProgress === null;
-  }, [renderProgress, ready]);
+    runtime.current.controls.enabled = renderProgress === null && !viewfinder;
+  }, [renderProgress, ready, viewfinder]);
   useEffect(() => {
     if (!runtime.current) return;
     const size = stageOutputSize(stage.aspectRatio);
@@ -1030,6 +1115,57 @@ export function DirectorStage({
       ],
     }));
     setSelected(id);
+    // First object in this browser: surface the console controls once so
+    // the keyboard and mouse bindings are discoverable before the scene
+    // grows. When two-step placement lands, the trigger moves there.
+    if (!helpSeen.current) {
+      helpSeen.current = true;
+      try {
+        localStorage.setItem("opendirector.stageHelp.v1", "seen");
+      } catch {
+        // Private-mode storages throw; the help just shows again.
+      }
+      setHelpOpen(true);
+    }
+  }
+  const presetCenter = (): Vector3Value => {
+    const subject = sampleStage(stageRef.current, timeRef.current).objects.find(
+      (entry) => entry.id === selected,
+    );
+    if (subject)
+      return {
+        x: subject.position.x,
+        y: subject.position.y + (subject.kind === "person" ? 1.3 : 0.5),
+        z: subject.position.z,
+      };
+    return { x: 0, y: 1, z: 0 };
+  };
+  const applyCameraPreset = (preset: CameraPresetId) => {
+    const center = presetCenter();
+    const spec = CAMERA_PRESETS[preset];
+    gestureEdit.current((doc) =>
+      editStageCameraAt(doc, doc.activeCameraId, timeRef.current, {
+        position: {
+          x: center.x + spec.offset.x,
+          y: center.y + spec.offset.y,
+          z: center.z + spec.offset.z,
+        },
+        target: center,
+        fov: spec.fov,
+        ...(spec.roll ? { roll: spec.roll } : {}),
+      }),
+    );
+  };
+  const commitLiveFov = () => {
+    const fov = liveFov.current;
+    liveFov.current = null;
+    if (fov === null) return;
+    gestureEdit.current((doc) =>
+      editStageCameraAt(doc, doc.activeCameraId, timeRef.current, {
+        ...sampleStage(doc, timeRef.current).camera,
+        fov,
+      }),
+    );
   };
   const removeObject = () => {
     if (!selected) return;
@@ -1449,11 +1585,7 @@ export function DirectorStage({
           );
           camera.fov = pose.camera.fov;
           camera.updateProjectionMatrix();
-          camera.lookAt(
-            pose.camera.target.x,
-            pose.camera.target.y,
-            pose.camera.target.z,
-          );
+          applyRoll(camera, pose.camera);
           for (const child of root.children) {
             const object = pose.objects.find(
               (item) => item.id === child.userData.objectId,
@@ -1622,6 +1754,29 @@ export function DirectorStage({
         role="img"
         aria-label={t("editors.stage.ui.stageAria")}
       />
+      {viewfinder && (
+        <div className="cw-stage-fovbar">
+          <label>
+            {t("editors.stage.ui.viewfinderFov")}
+            <input
+              type="range"
+              min={20}
+              max={110}
+              step={1}
+              defaultValue={
+                sampleStage(stageRef.current, timeRef.current).camera.fov
+              }
+              onInput={(event) => {
+                liveFov.current = Number(
+                  (event.target as HTMLInputElement).value,
+                );
+              }}
+              onPointerUp={commitLiveFov}
+              onKeyUp={commitLiveFov}
+            />
+          </label>
+        </div>
+      )}
       {aspectMask && <div className="cw-stage-mask" aria-hidden="true" />}
       {cameraPreview && <div className="cw-stage-pipframe" aria-hidden="true" />}
       {drawerOpen && (
@@ -1810,6 +1965,9 @@ export function DirectorStage({
           >
             {t("editors.stage.ui.renderMp4")}
           </button>
+          <button onClick={() => setHelpOpen((open) => !open)}>
+            {t("editors.stage.ui.shortcuts")}
+          </button>
         </div>
           <span
             className={`cw-stage-chip${dirty ? " is-unsaved" : ""}`}
@@ -1817,6 +1975,22 @@ export function DirectorStage({
           >
             {t(dirty ? "editors.stage.ui.unsavedChip" : "editors.stage.ui.savedChip")}
           </span>
+          <button
+            aria-pressed={viewfinder}
+            onClick={() => {
+              setViewfinder((current) => {
+                const next = !current;
+                if (next) {
+                  liveFov.current = null;
+                  setCameraPreview(true);
+                  setAspectMask(true);
+                }
+                return next;
+              });
+            }}
+          >
+            {t("editors.stage.ui.viewfinder")}
+          </button>
           <button
             aria-pressed={cameraPreview}
             onClick={() => setCameraPreview((current) => !current)}
@@ -1920,7 +2094,21 @@ export function DirectorStage({
                     + {t(titles.person)}
                   </button>
                 ) : (
-                  (["box", "sphere"] as const).map((kind) => (
+                  (
+                    [
+                      "box",
+                      "sphere",
+                      "cylinder",
+                      "cone",
+                      "pyramid",
+                      "torus",
+                      "plane",
+                      "capsule",
+                      "disk",
+                      "arc",
+                      "halfCylinder",
+                    ] as const
+                  ).map((kind) => (
                     <button key={kind} onClick={() => addObject(kind)}>
                       + {t(titles[kind])}
                     </button>
@@ -1946,9 +2134,8 @@ export function DirectorStage({
                     leftTab === "characters"
                       ? item.kind === "person" ||
                         (item.kind === "gltf" && item.role === "character")
-                      : item.kind === "box" ||
-                        item.kind === "sphere" ||
-                        (item.kind === "gltf" && item.role === "scene"),
+                      : item.kind !== "person" &&
+                        !(item.kind === "gltf" && item.role === "character"),
                   )
                   .map((item) => (
                     <button
@@ -1982,6 +2169,17 @@ export function DirectorStage({
                   </button>
                 ))}
               </div>
+              <h4>{t("editors.stage.ui.cameraPresets")}</h4>
+              <div className="cw-stage-preset-grid">
+                {(Object.keys(CAMERA_PRESETS) as CameraPresetId[]).map(
+                  (preset) => (
+                    <button key={preset} onClick={() => applyCameraPreset(preset)}>
+                      {t(`editors.stage.ui.preset.${preset}` as never)}
+                    </button>
+                  ),
+                )}
+              </div>
+              <h4>{t("editors.stage.ui.cameraMoves")}</h4>
               <p className="cw-domain-note">
                 {t("editors.stage.ui.cameraHint")}
               </p>
@@ -2582,6 +2780,47 @@ export function DirectorStage({
             }}
           />
         </fieldset>
+        {helpOpen && (
+          <div
+            className="cw-stage-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("editors.stage.ui.helpTitle")}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                // Child dialogs own their Escape; letting it bubble would
+                // close (or guard-close) the whole stage editor.
+                event.stopPropagation();
+                event.preventDefault();
+                setHelpOpen(false);
+              }
+            }}
+          >
+            <section className="cw-stage-help">
+              <header className="cw-stage-export-head">
+                <h4>{t("editors.stage.ui.helpTitle")}</h4>
+                <button
+                  type="button"
+                  aria-label={t("editors.stage.ui.closeHelp")}
+                  onClick={() => setHelpOpen(false)}
+                >
+                  ×
+                </button>
+              </header>
+              <h5>{t("editors.stage.ui.helpViewNav")}</h5>
+              <ul>
+                <li>{t("editors.stage.ui.helpOrbit")}</li>
+                <li>{t("editors.stage.ui.helpPan")}</li>
+                <li>{t("editors.stage.ui.helpZoom")}</li>
+              </ul>
+              <h5>{t("editors.stage.ui.helpEditor")}</h5>
+              <ul>
+                <li>{t("editors.stage.ui.helpEscape")}</li>
+                <li>{t("editors.stage.ui.helpTab")}</li>
+              </ul>
+            </section>
+          </div>
+        )}
         {exportOpen && (
           <div
             className="cw-stage-lightbox"
