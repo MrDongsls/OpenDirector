@@ -765,10 +765,20 @@ export function DirectorStage({
     if (!container) return;
     let renderer: THREE.WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({
-        antialias: true,
-        preserveDrawingBuffer: true,
-      });
+      try {
+        renderer = new THREE.WebGLRenderer({
+          antialias: true,
+          preserveDrawingBuffer: true,
+        });
+      } catch (first) {
+        // Some drivers refuse multisample buffers or run out of context
+        // slots under pressure; a plain context is enough to keep editing.
+        console.debug("stage renderer retry without antialias", first);
+        renderer = new THREE.WebGLRenderer({
+          antialias: false,
+          preserveDrawingBuffer: true,
+        });
+      }
     } catch (reason) {
       setError(
         t("editors.stage.ui.webglInit", {
@@ -990,6 +1000,9 @@ export function DirectorStage({
       for (const url of ownedAssetUrls.current) URL.revokeObjectURL(url);
       ownedAssetUrls.current.clear();
       light.shadow.dispose();
+      // Release the context slot immediately: browsers keep disposed
+      // contexts counted against their cap until garbage collection.
+      renderer.forceContextLoss();
       renderer.dispose();
       renderer.domElement.remove();
       runtime.current = null;
@@ -1679,6 +1692,7 @@ export function DirectorStage({
         if (child instanceof THREE.DirectionalLight) child.shadow.dispose();
       });
       materials.forEach((material) => material.dispose());
+      renderer?.forceContextLoss();
       renderer?.dispose();
       if (active.current && exporting.current === controller)
         setRenderProgress(null);

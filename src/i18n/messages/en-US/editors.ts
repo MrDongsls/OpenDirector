@@ -332,7 +332,7 @@ export const editors = {
   "editors.stage.ui.keepCamera": "Keep at least one camera.",
   "editors.stage.ui.cameraInUse":
     "A shot still uses this camera. Replace or delete that shot first.",
-  "editors.stage.ui.webglInit": "WebGL could not start: {reason}",
+  "editors.stage.ui.webglInit": "WebGL could not start: {reason}. Make sure hardware acceleration is on (chrome://gpu shows the WebGL status) and restart the browser; if it still fails, close other tabs that use WebGL.",
   "editors.stage.ui.webglLost":
     "The WebGL context was lost. Save the stage data, reopen the editor, and continue.",
   "editors.stage.ui.rendererNotReady": "The stage renderer is not ready yet.",

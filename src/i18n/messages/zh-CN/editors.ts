@@ -295,7 +295,7 @@ export const editors = {
   "editors.stage.ui.cameraName": "摄像机 {number}",
   "editors.stage.ui.keepCamera": "至少保留一个摄像机。",
   "editors.stage.ui.cameraInUse": "此机位仍被分镜引用，请先更换或删除对应分镜。",
-  "editors.stage.ui.webglInit": "无法初始化 WebGL：{reason}",
+  "editors.stage.ui.webglInit": "无法初始化 WebGL：{reason}。请确认浏览器已启用硬件加速（chrome://gpu 可查看 WebGL 状态）并重启浏览器后重试；仍失败时关闭其他占用 WebGL 的标签页。",
   "editors.stage.ui.webglLost": "WebGL 上下文已丢失。可先保存舞台数据，重新打开编辑器后继续。",
   "editors.stage.ui.rendererNotReady": "舞台渲染器尚未就绪。",
   "editors.stage.ui.screenshotFailed": "截图失败。",
