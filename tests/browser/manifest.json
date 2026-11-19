@@ -233,6 +233,13 @@
       "note": "Console-phase acceptance: the controls cheat-sheet opens once on the first object add and from the top bar, transform sliders pair with exact inputs, and camera rows open the split live preview with tab switching, keyboard ratio nudges and exit."
     },
     {
+      "file": "director_stage_visual_v1.mjs",
+      "lanes": [
+        "manual"
+      ],
+      "note": "Visual-alignment V1: captures the Director Stage shell and asserts the reference workbench geometry at 1700x1100 or 1920x1080."
+    },
+    {
       "file": "director_stage_delivery.mjs",
       "lanes": [
         "manual"
