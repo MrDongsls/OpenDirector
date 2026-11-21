@@ -326,6 +326,8 @@ export const editors = {
   "editors.stage.ui.assetImported":
     "Imported {name} · {animationCount} animation clips",
   "editors.stage.ui.assetImportedStatic": "Imported {name} · no animation data",
+  "editors.stage.ui.thumbnailFailed":
+    "{name} was imported, but its preview thumbnail could not be generated.",
   "editors.stage.ui.degreesSuffix": " (degrees)",
   "editors.stage.ui.editFailed": "The stage change failed.",
   "editors.stage.ui.cameraName": "Camera {number}",

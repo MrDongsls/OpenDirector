@@ -735,7 +735,7 @@ export function DirectorStage({
   const liveFovRef = liveFov;
   const [assetNotice, setAssetNotice] = useState("");
   /** Drawer draft over node.data.stills: pinned items plus unsaved captures,
-   * committed as a whole by the next apply. */
+   * committed as a whole by the next prepare or apply operation. */
   const [stills, setStills] = useState<StageStillItem[]>(
     node.data.stills ?? [],
   );
@@ -1278,8 +1278,37 @@ export function DirectorStage({
             item.id,
             createImportedRuntime(group, loaded.animations),
           );
+          const needsThumbnail = !item.thumbnailCapture && !item.thumbnailSource;
+          const thumbnailCapture = needsThumbnail
+            ? renderStageObjectThumbnailNow(item, loaded)
+            : null;
+          if (thumbnailCapture) {
+            edit((currentStage) => {
+              const currentObject = currentStage.objects.find(
+                (object) => object.id === item.id,
+              );
+              if (
+                !currentObject ||
+                currentObject.thumbnailCapture ||
+                currentObject.thumbnailSource
+              )
+                return currentStage;
+              return {
+                ...currentStage,
+                objects: currentStage.objects.map((object) =>
+                  object.id === item.id
+                    ? { ...object, thumbnailCapture }
+                    : object,
+                ),
+              };
+            });
+          }
           if (item.role === "character" && !loaded.animations.length)
             setAssetNotice(t("editors.stage.ui.assetNotice"));
+          if (needsThumbnail && !thumbnailCapture)
+            setAssetNotice(
+              t("editors.stage.ui.thumbnailFailed", { name: item.name }),
+            );
           displayPose(current, sampleStage(stageRef.current, timeRef.current));
         } catch {
           if (!cancelled && active.current)
@@ -1393,6 +1422,10 @@ export function DirectorStage({
         },
       ],
     }));
+    if (!thumbnailCapture)
+      setAssetNotice(
+        t("editors.stage.ui.thumbnailFailed", { name: thumbnailObject.name }),
+      );
     setSelected(id);
     // First object in this browser: surface the console controls once so
     // the keyboard and mouse bindings are discoverable before the scene
@@ -1747,12 +1780,14 @@ export function DirectorStage({
       }));
       setSelected(id);
       setAssetNotice(
-        loaded.animations.length
-          ? t("editors.stage.ui.assetImported", {
-              name,
-              animationCount: loaded.animations.length,
-            })
-          : t("editors.stage.ui.assetImportedStatic", { name }),
+        thumbnailCapture
+          ? loaded.animations.length
+            ? t("editors.stage.ui.assetImported", {
+                name,
+                animationCount: loaded.animations.length,
+              })
+            : t("editors.stage.ui.assetImportedStatic", { name })
+          : t("editors.stage.ui.thumbnailFailed", { name }),
       );
     } catch (reason) {
       if (source) {

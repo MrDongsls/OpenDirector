@@ -192,6 +192,7 @@ test("stage upload titles stay path-free whatever the object is named", () => {
 test("stage JSON imports flag imported objects the project has not registered", () => {
   const stage = createLocalStage();
   const [person] = stage.objects;
+  const unregisteredThumbnail = { ...thumbnailAsset };
   const foreign = parseLocalStageValue({
     ...stage,
     objects: [
@@ -220,14 +221,21 @@ test("stage JSON imports flag imported objects the project has not registered", 
         hasAnimation: false,
         motionClips: [],
       },
+      {
+        ...person,
+        id: "foreign-thumbnail",
+        thumbnailAsset: unregisteredThumbnail,
+      },
     ],
   });
   const registered = (ref: AssetRef) =>
-    ref.assetId !== "asset-gltf" && ref.revision <= 5;
+    ref.assetId !== "asset-gltf" &&
+    ref.assetId !== "asset-thumbnail" &&
+    ref.revision <= 5;
   const flagged = unregisteredStageAssets(foreign, registered);
   assert.deepEqual(
     flagged.map((object) => object.id),
-    ["foreign-actor"],
+    ["foreign-actor", "foreign-thumbnail"],
   );
   // A pinned asset at an older revision than the registered one still resolves.
   assert.deepEqual(

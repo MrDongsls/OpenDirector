@@ -459,8 +459,8 @@ export class CreationProjection {
             objects,
           }),
           stills,
-          // The newest still doubles as the canvas poster for this node.
-          ...(stills.length ? { src: stills.at(-1)!.src } : {}),
+          // The newest still is the canvas poster when its preview URL is usable.
+          ...(stills.at(-1)?.src ? { src: stills.at(-1)!.src } : {}),
         };
         }
       case "layers":
