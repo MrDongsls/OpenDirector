@@ -1173,6 +1173,71 @@ export function DirectorStage({
   const loadedStage = useRef(historyState.present);
   const consoleRef = useRef<HTMLDivElement>(null);
   const consoleId = useId();
+  const nestedDialogRef = useRef<HTMLDivElement>(null);
+  const nestedDialog = helpOpen
+    ? "help"
+    : exportOpen
+      ? "export"
+      : previewStillId
+        ? "preview"
+        : confirmingClose
+          ? "confirm"
+          : null;
+  useEffect(() => {
+    if (!nestedDialog) return;
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const frame = requestAnimationFrame(() => {
+      const root = nestedDialogRef.current;
+      const first = root?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]',
+      );
+      (first ?? root)?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [nestedDialog]);
+  const trapNestedDialog = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    onEscape: () => void,
+  ) => {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onEscape();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const root = nestedDialogRef.current;
+    const elements = [
+      ...(root?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]',
+      ) ?? []),
+    ];
+    const first = elements[0];
+    const last = elements.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+    if (
+      event.shiftKey &&
+      (document.activeElement === first || document.activeElement === root)
+    ) {
+      event.preventDefault();
+      last.focus();
+    } else if (
+      !event.shiftKey &&
+      (document.activeElement === last || document.activeElement === root)
+    ) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   useEffect(() => {
     const previous =
       document.activeElement instanceof HTMLElement
@@ -5452,19 +5517,15 @@ export function DirectorStage({
         </fieldset>
         {helpOpen && (
           <div
+            ref={nestedDialogRef}
             className="cw-stage-lightbox"
             role="dialog"
             aria-modal="true"
+            tabIndex={-1}
             aria-label={t("editors.stage.ui.helpTitle")}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                // Child dialogs own their Escape; letting it bubble would
-                // close (or guard-close) the whole stage editor.
-                event.stopPropagation();
-                event.preventDefault();
-                setHelpOpen(false);
-              }
-            }}
+            onKeyDown={(event) =>
+              trapNestedDialog(event, () => setHelpOpen(false))
+            }
           >
             <section className="cw-stage-help">
               <header className="cw-stage-export-head">
@@ -5494,19 +5555,15 @@ export function DirectorStage({
         )}
         {exportOpen && (
           <div
+            ref={nestedDialogRef}
             className="cw-stage-lightbox"
             role="dialog"
             aria-modal="true"
+            tabIndex={-1}
             aria-label={t("editors.stage.ui.exportVideo")}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                // Child dialogs own their Escape; letting it bubble would
-                // close (or guard-close) the whole stage editor.
-                event.stopPropagation();
-                event.preventDefault();
-                setView({ type: "closeExport" });
-              }
-            }}
+            onKeyDown={(event) =>
+              trapNestedDialog(event, () => setView({ type: "closeExport" }))
+            }
           >
             <form
               className="cw-stage-export"
@@ -5640,19 +5697,15 @@ export function DirectorStage({
         )}
         {previewStill && (
           <div
+            ref={nestedDialogRef}
             className="cw-stage-lightbox"
             role="dialog"
             aria-modal="true"
+            tabIndex={-1}
             aria-label={stillName(stills.indexOf(previewStill))}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                // Child dialogs own their Escape; letting it bubble would
-                // close (or guard-close) the whole stage editor.
-                event.stopPropagation();
-                event.preventDefault();
-                setPreviewStillId(null);
-              }
-            }}
+            onKeyDown={(event) =>
+              trapNestedDialog(event, () => setPreviewStillId(null))
+            }
           >
             <figure>
               <img
@@ -5675,7 +5728,16 @@ export function DirectorStage({
           </div>
         )}
         {confirmingClose && (
-          <div className="cw-stage-confirm" role="dialog" aria-modal="true">
+          <div
+            ref={nestedDialogRef}
+            className="cw-stage-confirm"
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
+            onKeyDown={(event) =>
+              trapNestedDialog(event, () => setConfirmingClose(false))
+            }
+          >
             <div>
               <h3>{t("editors.stage.ui.unsavedTitle")}</h3>
               <button onClick={() => setConfirmingClose(false)}>
