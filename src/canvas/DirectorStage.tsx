@@ -1367,9 +1367,6 @@ export function DirectorStage({
       position: { x: 0, y: 0, z: 0 },
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
-      visible: true,
-      locked: false,
-      opacity: 1,
       keyframes: [],
       motionClips: [],
     };
@@ -1726,9 +1723,6 @@ export function DirectorStage({
         position: { x: 0, y: 0, z: 0 },
         rotation: { x: 0, y: 0, z: 0 },
         scale: { x: 1, y: 1, z: 1 },
-        visible: true,
-        locked: false,
-        opacity: 1,
         keyframes: [],
         motionClips: [],
       };
