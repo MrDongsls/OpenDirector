@@ -3,22 +3,32 @@
     {
       "file": "image_quality_test.mjs",
       "previewSafe": true,
-      "lanes": ["extended", "production"]
+      "lanes": [
+        "extended",
+        "production"
+      ]
     },
     {
       "file": "heif_upload_recovery.mjs",
-      "lanes": ["extended", "production"],
+      "lanes": [
+        "extended",
+        "production"
+      ],
       "previewSafe": true,
       "note": "HEIF upload, drop, fresh-node/reference save acknowledgement, preview failure and reload in both languages. Optional HEIF_REVIEW_FILE supplies a local camera sample."
     },
     {
       "file": "heif_import.mjs",
-      "lanes": ["extended"],
+      "lanes": [
+        "extended"
+      ],
       "note": "Real HEIC/HEIF import, orientation, reload, bilingual errors and original export; fixture generation. Imports /src through Vite."
     },
     {
       "file": "kling_video.mjs",
-      "lanes": ["extendedFixture"],
+      "lanes": [
+        "extendedFixture"
+      ],
       "note": "Uses isolated creation fixtures for bilingual Kling configuration, default preservation and image-based generation."
     },
     {
@@ -114,7 +124,9 @@
     },
     {
       "file": "canvas_text_markdown.mjs",
-      "lanes": ["gate"],
+      "lanes": [
+        "gate"
+      ],
       "note": "Markdown blocks, native inline composition, fullscreen selection/scroll handoff and resize commits. Uses /src through Vite."
     },
     {
@@ -178,7 +190,10 @@
     {
       "file": "creation_history.mjs",
       "previewSafe": true,
-      "lanes": ["extended", "production"]
+      "lanes": [
+        "extended",
+        "production"
+      ]
     },
     {
       "file": "creation_journey.mjs",
@@ -197,7 +212,10 @@
     {
       "file": "default_entry.mjs",
       "previewSafe": true,
-      "lanes": ["extended", "production"]
+      "lanes": [
+        "extended",
+        "production"
+      ]
     },
     {
       "file": "director_stage_entry.mjs",
@@ -210,6 +228,20 @@
       "file": "director_stage_fixture.mjs",
       "helper": true,
       "note": "GLB and animated-GLB fixture builders for the Director Stage browser checks."
+    },
+    {
+      "file": "director_stage_gizmo.mjs",
+      "lanes": [
+        "gate"
+      ],
+      "note": "Director Stage placement gizmo acceptance: preview dragging repositions a subject through base transforms without authoring keyframes, with one undo per drag. DIRECTOR_STAGE_LOCALE reruns the flow in another UI language."
+    },
+    {
+      "file": "director_stage_pointer_alignment.mjs",
+      "lanes": [
+        "gate"
+      ],
+      "note": "Director Stage pointer alignment acceptance: fractional ground placement, selection, gizmo rendering and DPR-scaled viewport projection stay aligned."
     },
     {
       "file": "director_stage_animation.mjs",
@@ -238,6 +270,13 @@
         "manual"
       ],
       "note": "Visual-alignment V1: captures the Director Stage shell and asserts the reference workbench geometry at 1700x1100 or 1920x1080."
+    },
+    {
+      "file": "director_stage_interaction.mjs",
+      "lanes": [
+        "manual"
+      ],
+      "note": "Batch-5 acceptance: view-settings toggles, the grouped scene tree with focus and collapse, two-step ground placement with the first-time help, the anchored action bar, and the roam view."
     },
     {
       "file": "director_stage_delivery.mjs",
@@ -272,7 +311,10 @@
     {
       "file": "first_last_frame_connections.mjs",
       "previewSafe": true,
-      "lanes": ["extended", "production"]
+      "lanes": [
+        "extended",
+        "production"
+      ]
     },
     {
       "file": "generation_feedback.mjs",
@@ -391,7 +433,10 @@
     {
       "file": "paste_undo.mjs",
       "previewSafe": true,
-      "lanes": ["extended", "production"]
+      "lanes": [
+        "extended",
+        "production"
+      ]
     },
     {
       "file": "project_list_overflow.mjs",

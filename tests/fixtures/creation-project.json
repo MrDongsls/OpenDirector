@@ -810,11 +810,13 @@
         "background": "#ffffff",
         "grid": true,
         "duration": 5.0,
+        "fps": 30,
         "aspectRatio": "16:9",
         "cameras": [
           {
             "id": "camera",
             "name": "Camera",
+            "aspectRatio": "16:9",
             "pose": {
               "position": {
                 "x": 0.0,
@@ -828,6 +830,48 @@
               },
               "fov": 50.0,
               "roll": 0.0
+            },
+            "channels": {
+              "position": [
+                {
+                  "id": "key",
+                  "time": 0.0,
+                  "value": {
+                    "x": 0.0,
+                    "y": 1.0,
+                    "z": 5.0
+                  }
+                }
+              ],
+              "target": [
+                {
+                  "id": "key",
+                  "time": 0.0,
+                  "value": {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 0.0
+                  }
+                }
+              ],
+              "up": [
+                {
+                  "id": "key",
+                  "time": 0.0,
+                  "value": {
+                    "x": 0.0,
+                    "y": 1.0,
+                    "z": 0.0
+                  }
+                }
+              ],
+              "focalLength": [
+                {
+                  "id": "key",
+                  "time": 0.0,
+                  "value": 50.0
+                }
+              ]
             },
             "keyframes": [
               {
@@ -882,6 +926,9 @@
             "kind": "person",
             "name": "Actor",
             "color": "#ff0000",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
             "keyframes": [],
             "motionClips": [
               {
@@ -922,6 +969,9 @@
             "kind": "gltf",
             "name": "Prop",
             "color": "#b8c5ff",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
             "keyframes": [],
             "motionClips": [],
             "asset": {
@@ -937,7 +987,37 @@
             "thumbnailAsset": null
           }
         ],
-        "stills": []
+        "stills": [],
+        "environment": {
+          "preset": "studio",
+          "groundColor": "#181818",
+          "groundVisible": true,
+          "exposure": 1.0,
+          "backgroundAsset": null
+        },
+        "lights": [
+          {
+            "id": "hemisphere",
+            "color": "#ffffff",
+            "intensity": 2.4,
+            "position": { "x": 0.0, "y": 1.0, "z": 0.0 },
+            "castShadow": false
+          },
+          {
+            "id": "key",
+            "color": "#ffffff",
+            "intensity": 3.5,
+            "position": { "x": 5.0, "y": 10.0, "z": 6.0 },
+            "castShadow": true
+          },
+          {
+            "id": "fill",
+            "color": "#ffffff",
+            "intensity": 1.6,
+            "position": { "x": -6.0, "y": 5.0, "z": -5.0 },
+            "castShadow": false
+          }
+        ]
       }
     },
     {

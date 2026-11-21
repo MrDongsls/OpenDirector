@@ -1506,6 +1506,7 @@
                   "canvas.move": "#/$defs/CanvasMoveCommandOperation",
                   "canvas.show": "#/$defs/CanvasShowCommandOperation",
                   "canvas.update": "#/$defs/CanvasUpdateCommandOperation",
+                  "director.apply": "#/$defs/DirectorApplyCommandOperation",
                   "editor.create": "#/$defs/EditorCreateCommandOperation",
                   "editor.save": "#/$defs/EditorSaveCommandOperation",
                   "generationSpec.create": "#/$defs/SpecCreateCommandOperation",
@@ -1576,6 +1577,9 @@
                 },
                 {
                   "$ref": "#/$defs/EditorSaveCommandOperation"
+                },
+                {
+                  "$ref": "#/$defs/DirectorApplyCommandOperation"
                 }
               ]
             },
@@ -1589,6 +1593,49 @@
           "operations"
         ],
         "title": "BatchPayload",
+        "type": "object"
+      },
+      "CameraChannels": {
+        "additionalProperties": false,
+        "properties": {
+          "position": {
+            "default": [],
+            "description": "Independent camera position channel.",
+            "items": {
+              "$ref": "#/$defs/CameraVectorFrame"
+            },
+            "title": "Position",
+            "type": "array"
+          },
+          "target": {
+            "default": [],
+            "description": "Independent camera target channel.",
+            "items": {
+              "$ref": "#/$defs/CameraVectorFrame"
+            },
+            "title": "Target",
+            "type": "array"
+          },
+          "up": {
+            "default": [],
+            "description": "Independent camera up-vector channel.",
+            "items": {
+              "$ref": "#/$defs/CameraVectorFrame"
+            },
+            "title": "Up",
+            "type": "array"
+          },
+          "focalLength": {
+            "default": [],
+            "description": "Independent camera focal-length channel.",
+            "items": {
+              "$ref": "#/$defs/CameraNumberFrame"
+            },
+            "title": "Focallength",
+            "type": "array"
+          }
+        },
+        "title": "CameraChannels",
         "type": "object"
       },
       "CameraFrame": {
@@ -1621,6 +1668,38 @@
         "title": "CameraFrame",
         "type": "object"
       },
+      "CameraNumberFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable channel keyframe ID.",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "time": {
+            "description": "Keyframe time in seconds.",
+            "minimum": 0,
+            "title": "Time",
+            "type": "number"
+          },
+          "value": {
+            "description": "Keyframed camera focal length.",
+            "exclusiveMinimum": 0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "value"
+        ],
+        "title": "CameraNumberFrame",
+        "type": "object"
+      },
       "CameraRig": {
         "additionalProperties": false,
         "properties": {
@@ -1638,6 +1717,20 @@
             "title": "Name",
             "type": "string"
           },
+          "aspectRatio": {
+            "default": "16:9",
+            "description": "Camera output aspect ratio.",
+            "enum": [
+              "16:9",
+              "2.39:1",
+              "9:16",
+              "1:1",
+              "4:3",
+              "3:4"
+            ],
+            "title": "Aspectratio",
+            "type": "string"
+          },
           "pose": {
             "$ref": "#/$defs/StageCamera",
             "description": "Camera position and look-at target."
@@ -1650,6 +1743,10 @@
             },
             "title": "Keyframes",
             "type": "array"
+          },
+          "channels": {
+            "$ref": "#/$defs/CameraChannels",
+            "description": "Independent authoritative camera channels."
           }
         },
         "required": [
@@ -1658,6 +1755,36 @@
           "pose"
         ],
         "title": "CameraRig",
+        "type": "object"
+      },
+      "CameraVectorFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable channel keyframe ID.",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "time": {
+            "description": "Keyframe time in seconds.",
+            "minimum": 0,
+            "title": "Time",
+            "type": "number"
+          },
+          "value": {
+            "$ref": "#/$defs/Vector3",
+            "description": "Keyframed camera vector."
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "value"
+        ],
+        "title": "CameraVectorFrame",
         "type": "object"
       },
       "CanvasApplyEdit": {
@@ -3769,6 +3896,7 @@
                 "canvas.show": "#/$defs/CanvasShowCommand",
                 "canvas.update": "#/$defs/CanvasUpdateCommand",
                 "creation.batch": "#/$defs/BatchCommand",
+                "director.apply": "#/$defs/DirectorApplyCommand",
                 "editor.create": "#/$defs/EditorCreateCommand",
                 "editor.save": "#/$defs/EditorSaveCommand",
                 "generation.submit": "#/$defs/GenerationSubmitCommand",
@@ -3905,6 +4033,9 @@
               },
               {
                 "$ref": "#/$defs/EditorSaveCommand"
+              },
+              {
+                "$ref": "#/$defs/DirectorApplyCommand"
               },
               {
                 "$ref": "#/$defs/HistoryUndoCommand"
@@ -4085,6 +4216,101 @@
         "title": "CreationContracts",
         "type": "object"
       },
+      "DirectorApply": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "$ref": "#/$defs/DirectorDocument",
+            "description": "Authoritative Director Stage document applied atomically."
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "title": "DirectorApply",
+        "type": "object"
+      },
+      "DirectorApplyCommand": {
+        "additionalProperties": false,
+        "description": "Apply an authoritative Director Stage document atomically.",
+        "properties": {
+          "commandId": {
+            "description": "Stable command ID for idempotent replay.",
+            "format": "uuid",
+            "title": "Commandid",
+            "type": "string"
+          },
+          "projectId": {
+            "description": "Owning project ID.",
+            "format": "uuid",
+            "title": "Projectid",
+            "type": "string"
+          },
+          "type": {
+            "const": "director.apply",
+            "description": "Command discriminator.",
+            "title": "Type",
+            "type": "string"
+          },
+          "expectedVersions": {
+            "default": [],
+            "description": "Current versions of mutated existing objects; payload revision fields do not replace these.",
+            "items": {
+              "$ref": "#/$defs/ObjectVersion"
+            },
+            "title": "Expectedversions",
+            "type": "array"
+          },
+          "expectedPreview": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fingerprint of the confirmed impact preview.",
+            "title": "Expectedpreview"
+          },
+          "payload": {
+            "$ref": "#/$defs/DirectorApply",
+            "description": "Apply an authoritative Director Stage document atomically."
+          }
+        },
+        "required": [
+          "commandId",
+          "projectId",
+          "type",
+          "payload"
+        ],
+        "title": "DirectorApplyCommand",
+        "type": "object"
+      },
+      "DirectorApplyCommandOperation": {
+        "additionalProperties": false,
+        "description": "Apply an authoritative Director Stage document atomically.",
+        "properties": {
+          "type": {
+            "const": "director.apply",
+            "description": "Operation discriminator.",
+            "title": "Type",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/DirectorApply",
+            "description": "Apply an authoritative Director Stage document atomically."
+          }
+        },
+        "required": [
+          "type",
+          "payload"
+        ],
+        "title": "DirectorApplyCommandOperation",
+        "type": "object"
+      },
       "DirectorCanvasItem": {
         "additionalProperties": false,
         "properties": {
@@ -4217,6 +4443,19 @@
             "title": "Duration",
             "type": "number"
           },
+          "fps": {
+            "default": 30,
+            "description": "Frames per second. 帧率。",
+            "enum": [
+              24,
+              25,
+              30,
+              50,
+              60
+            ],
+            "title": "Fps",
+            "type": "integer"
+          },
           "aspectRatio": {
             "default": "16:9",
             "description": "Output width-to-height ratio.",
@@ -4274,6 +4513,20 @@
               "$ref": "#/$defs/StageObject"
             },
             "title": "Objects",
+            "type": "array"
+          },
+          "environment": {
+            "$ref": "#/$defs/StageEnvironment",
+            "description": "Authoritative environment reference and ground configuration. 权威环境引用和地面配置。"
+          },
+          "lights": {
+            "description": "The three retained stage lights. 舞台保留的三盏灯光。",
+            "items": {
+              "$ref": "#/$defs/StageLight"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "title": "Lights",
             "type": "array"
           },
           "stills": {
@@ -11514,6 +11767,104 @@
         "title": "StageCamera",
         "type": "object"
       },
+      "StageEnvironment": {
+        "additionalProperties": false,
+        "description": "The named environment used by the retained Director scene.",
+        "properties": {
+          "preset": {
+            "default": "studio",
+            "description": "Environment preset reference. 环境预设引用。",
+            "enum": [
+              "studio",
+              "warm-sunset",
+              "moonlit"
+            ],
+            "title": "Preset",
+            "type": "string"
+          },
+          "groundColor": {
+            "default": "#181818",
+            "description": "Ground plane color. 地面颜色。",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Groundcolor",
+            "type": "string"
+          },
+          "groundVisible": {
+            "default": true,
+            "description": "Whether the ground plane is visible. 是否显示地面。",
+            "title": "Groundvisible",
+            "type": "boolean"
+          },
+          "exposure": {
+            "default": 1.0,
+            "description": "Scene exposure from zero to four. 场景曝光范围为 0 到 4。",
+            "maximum": 4,
+            "minimum": 0,
+            "title": "Exposure",
+            "type": "number"
+          },
+          "backgroundAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional registered image asset used as the stage background. 可选的已登记图片背景素材。"
+          }
+        },
+        "title": "StageEnvironment",
+        "type": "object"
+      },
+      "StageLight": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable light role. 稳定灯光角色。",
+            "enum": [
+              "hemisphere",
+              "key",
+              "fill"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "color": {
+            "description": "Light color in #RRGGBB format. 灯光颜色。",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "type": "string"
+          },
+          "intensity": {
+            "description": "Light intensity from zero to ten. 灯光强度范围为 0 到 10。",
+            "maximum": 10,
+            "minimum": 0,
+            "title": "Intensity",
+            "type": "number"
+          },
+          "position": {
+            "$ref": "#/$defs/Vector3",
+            "description": "Light position in stage coordinates. 灯光在舞台坐标中的位置。"
+          },
+          "castShadow": {
+            "default": false,
+            "description": "Whether the light casts shadows. 是否投射阴影。",
+            "title": "Castshadow",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "color",
+          "intensity",
+          "position"
+        ],
+        "title": "StageLight",
+        "type": "object"
+      },
       "StageMotion": {
         "additionalProperties": false,
         "properties": {
@@ -11604,6 +11955,26 @@
             "pattern": "^#[0-9a-fA-F]{6}$",
             "title": "Color",
             "type": "string"
+          },
+          "visible": {
+            "default": true,
+            "description": "Whether this object is displayed.",
+            "title": "Visible",
+            "type": "boolean"
+          },
+          "locked": {
+            "default": false,
+            "description": "Whether edits to this object are blocked.",
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "opacity": {
+            "default": 1,
+            "description": "Layer opacity from zero to one.",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Opacity",
+            "type": "number"
           },
           "keyframes": {
             "default": [],
@@ -15073,6 +15444,7 @@
             "canvas.show": "#/$defs/CanvasShowCommand",
             "canvas.update": "#/$defs/CanvasUpdateCommand",
             "creation.batch": "#/$defs/BatchCommand",
+            "director.apply": "#/$defs/DirectorApplyCommand",
             "editor.create": "#/$defs/EditorCreateCommand",
             "editor.save": "#/$defs/EditorSaveCommand",
             "generation.submit": "#/$defs/GenerationSubmitCommand",
@@ -15209,6 +15581,9 @@
           },
           {
             "$ref": "#/$defs/EditorSaveCommand"
+          },
+          {
+            "$ref": "#/$defs/DirectorApplyCommand"
           },
           {
             "$ref": "#/$defs/HistoryUndoCommand"
@@ -16954,6 +17329,7 @@
                   "canvas.move": "#/$defs/CanvasMoveCommandOperation",
                   "canvas.show": "#/$defs/CanvasShowCommandOperation",
                   "canvas.update": "#/$defs/CanvasUpdateCommandOperation",
+                  "director.apply": "#/$defs/DirectorApplyCommandOperation",
                   "editor.create": "#/$defs/EditorCreateCommandOperation",
                   "editor.save": "#/$defs/EditorSaveCommandOperation",
                   "generationSpec.create": "#/$defs/SpecCreateCommandOperation",
@@ -17024,6 +17400,9 @@
                 },
                 {
                   "$ref": "#/$defs/EditorSaveCommandOperation"
+                },
+                {
+                  "$ref": "#/$defs/DirectorApplyCommandOperation"
                 }
               ]
             },
@@ -17037,6 +17416,55 @@
           "operations"
         ],
         "title": "BatchPayload",
+        "type": "object"
+      },
+      "CameraChannels": {
+        "additionalProperties": false,
+        "properties": {
+          "position": {
+            "default": [],
+            "description": "Independent camera position channel.",
+            "items": {
+              "$ref": "#/$defs/CameraVectorFrame"
+            },
+            "title": "Position",
+            "type": "array"
+          },
+          "target": {
+            "default": [],
+            "description": "Independent camera target channel.",
+            "items": {
+              "$ref": "#/$defs/CameraVectorFrame"
+            },
+            "title": "Target",
+            "type": "array"
+          },
+          "up": {
+            "default": [],
+            "description": "Independent camera up-vector channel.",
+            "items": {
+              "$ref": "#/$defs/CameraVectorFrame"
+            },
+            "title": "Up",
+            "type": "array"
+          },
+          "focalLength": {
+            "default": [],
+            "description": "Independent camera focal-length channel.",
+            "items": {
+              "$ref": "#/$defs/CameraNumberFrame"
+            },
+            "title": "Focallength",
+            "type": "array"
+          }
+        },
+        "required": [
+          "position",
+          "target",
+          "up",
+          "focalLength"
+        ],
+        "title": "CameraChannels",
         "type": "object"
       },
       "CameraFrame": {
@@ -17069,6 +17497,38 @@
         "title": "CameraFrame",
         "type": "object"
       },
+      "CameraNumberFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable channel keyframe ID.",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "time": {
+            "description": "Keyframe time in seconds.",
+            "minimum": 0,
+            "title": "Time",
+            "type": "number"
+          },
+          "value": {
+            "description": "Keyframed camera focal length.",
+            "exclusiveMinimum": 0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "value"
+        ],
+        "title": "CameraNumberFrame",
+        "type": "object"
+      },
       "CameraRig": {
         "additionalProperties": false,
         "properties": {
@@ -17086,6 +17546,20 @@
             "title": "Name",
             "type": "string"
           },
+          "aspectRatio": {
+            "default": "16:9",
+            "description": "Camera output aspect ratio.",
+            "enum": [
+              "16:9",
+              "2.39:1",
+              "9:16",
+              "1:1",
+              "4:3",
+              "3:4"
+            ],
+            "title": "Aspectratio",
+            "type": "string"
+          },
           "pose": {
             "$ref": "#/$defs/StageCamera",
             "description": "Camera position and look-at target."
@@ -17098,15 +17572,51 @@
             },
             "title": "Keyframes",
             "type": "array"
+          },
+          "channels": {
+            "$ref": "#/$defs/CameraChannels",
+            "description": "Independent authoritative camera channels."
           }
         },
         "required": [
           "id",
           "name",
+          "aspectRatio",
           "pose",
-          "keyframes"
+          "keyframes",
+          "channels"
         ],
         "title": "CameraRig",
+        "type": "object"
+      },
+      "CameraVectorFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable channel keyframe ID.",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "time": {
+            "description": "Keyframe time in seconds.",
+            "minimum": 0,
+            "title": "Time",
+            "type": "number"
+          },
+          "value": {
+            "$ref": "#/$defs/Vector3",
+            "description": "Keyframed camera vector."
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "value"
+        ],
+        "title": "CameraVectorFrame",
         "type": "object"
       },
       "CanvasApplyEdit": {
@@ -19271,6 +19781,7 @@
                 "canvas.show": "#/$defs/CanvasShowCommand",
                 "canvas.update": "#/$defs/CanvasUpdateCommand",
                 "creation.batch": "#/$defs/BatchCommand",
+                "director.apply": "#/$defs/DirectorApplyCommand",
                 "editor.create": "#/$defs/EditorCreateCommand",
                 "editor.save": "#/$defs/EditorSaveCommand",
                 "generation.submit": "#/$defs/GenerationSubmitCommand",
@@ -19407,6 +19918,9 @@
               },
               {
                 "$ref": "#/$defs/EditorSaveCommand"
+              },
+              {
+                "$ref": "#/$defs/DirectorApplyCommand"
               },
               {
                 "$ref": "#/$defs/HistoryUndoCommand"
@@ -19587,6 +20101,103 @@
         "title": "CreationContracts",
         "type": "object"
       },
+      "DirectorApply": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "$ref": "#/$defs/DirectorDocument",
+            "description": "Authoritative Director Stage document applied atomically."
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "title": "DirectorApply",
+        "type": "object"
+      },
+      "DirectorApplyCommand": {
+        "additionalProperties": false,
+        "description": "Apply an authoritative Director Stage document atomically.",
+        "properties": {
+          "commandId": {
+            "description": "Stable command ID for idempotent replay.",
+            "format": "uuid",
+            "title": "Commandid",
+            "type": "string"
+          },
+          "projectId": {
+            "description": "Owning project ID.",
+            "format": "uuid",
+            "title": "Projectid",
+            "type": "string"
+          },
+          "type": {
+            "const": "director.apply",
+            "description": "Command discriminator.",
+            "title": "Type",
+            "type": "string"
+          },
+          "expectedVersions": {
+            "default": [],
+            "description": "Current versions of mutated existing objects; payload revision fields do not replace these.",
+            "items": {
+              "$ref": "#/$defs/ObjectVersion"
+            },
+            "title": "Expectedversions",
+            "type": "array"
+          },
+          "expectedPreview": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fingerprint of the confirmed impact preview.",
+            "title": "Expectedpreview"
+          },
+          "payload": {
+            "$ref": "#/$defs/DirectorApply",
+            "description": "Apply an authoritative Director Stage document atomically."
+          }
+        },
+        "required": [
+          "commandId",
+          "projectId",
+          "type",
+          "expectedVersions",
+          "expectedPreview",
+          "payload"
+        ],
+        "title": "DirectorApplyCommand",
+        "type": "object"
+      },
+      "DirectorApplyCommandOperation": {
+        "additionalProperties": false,
+        "description": "Apply an authoritative Director Stage document atomically.",
+        "properties": {
+          "type": {
+            "const": "director.apply",
+            "description": "Operation discriminator.",
+            "title": "Type",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/DirectorApply",
+            "description": "Apply an authoritative Director Stage document atomically."
+          }
+        },
+        "required": [
+          "type",
+          "payload"
+        ],
+        "title": "DirectorApplyCommandOperation",
+        "type": "object"
+      },
       "DirectorCanvasItem": {
         "additionalProperties": false,
         "properties": {
@@ -19729,6 +20340,19 @@
             "title": "Duration",
             "type": "number"
           },
+          "fps": {
+            "default": 30,
+            "description": "Frames per second. 帧率。",
+            "enum": [
+              24,
+              25,
+              30,
+              50,
+              60
+            ],
+            "title": "Fps",
+            "type": "integer"
+          },
           "aspectRatio": {
             "default": "16:9",
             "description": "Output width-to-height ratio.",
@@ -19788,6 +20412,20 @@
             "title": "Objects",
             "type": "array"
           },
+          "environment": {
+            "$ref": "#/$defs/StageEnvironment",
+            "description": "Authoritative environment reference and ground configuration. 权威环境引用和地面配置。"
+          },
+          "lights": {
+            "description": "The three retained stage lights. 舞台保留的三盏灯光。",
+            "items": {
+              "$ref": "#/$defs/StageLight"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "title": "Lights",
+            "type": "array"
+          },
           "stills": {
             "default": [],
             "description": "Captured still frames pinned as project image assets, oldest first.",
@@ -19802,12 +20440,15 @@
           "background",
           "grid",
           "duration",
+          "fps",
           "aspectRatio",
           "cameras",
           "activeCameraId",
           "cameraSource",
           "shots",
           "objects",
+          "environment",
+          "lights",
           "stills"
         ],
         "title": "DirectorData",
@@ -27318,6 +27959,112 @@
         "title": "StageCamera",
         "type": "object"
       },
+      "StageEnvironment": {
+        "additionalProperties": false,
+        "description": "The named environment used by the retained Director scene.",
+        "properties": {
+          "preset": {
+            "default": "studio",
+            "description": "Environment preset reference. 环境预设引用。",
+            "enum": [
+              "studio",
+              "warm-sunset",
+              "moonlit"
+            ],
+            "title": "Preset",
+            "type": "string"
+          },
+          "groundColor": {
+            "default": "#181818",
+            "description": "Ground plane color. 地面颜色。",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Groundcolor",
+            "type": "string"
+          },
+          "groundVisible": {
+            "default": true,
+            "description": "Whether the ground plane is visible. 是否显示地面。",
+            "title": "Groundvisible",
+            "type": "boolean"
+          },
+          "exposure": {
+            "default": 1.0,
+            "description": "Scene exposure from zero to four. 场景曝光范围为 0 到 4。",
+            "maximum": 4,
+            "minimum": 0,
+            "title": "Exposure",
+            "type": "number"
+          },
+          "backgroundAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional registered image asset used as the stage background. 可选的已登记图片背景素材。"
+          }
+        },
+        "required": [
+          "preset",
+          "groundColor",
+          "groundVisible",
+          "exposure",
+          "backgroundAsset"
+        ],
+        "title": "StageEnvironment",
+        "type": "object"
+      },
+      "StageLight": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable light role. 稳定灯光角色。",
+            "enum": [
+              "hemisphere",
+              "key",
+              "fill"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "color": {
+            "description": "Light color in #RRGGBB format. 灯光颜色。",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "type": "string"
+          },
+          "intensity": {
+            "description": "Light intensity from zero to ten. 灯光强度范围为 0 到 10。",
+            "maximum": 10,
+            "minimum": 0,
+            "title": "Intensity",
+            "type": "number"
+          },
+          "position": {
+            "$ref": "#/$defs/Vector3",
+            "description": "Light position in stage coordinates. 灯光在舞台坐标中的位置。"
+          },
+          "castShadow": {
+            "default": false,
+            "description": "Whether the light casts shadows. 是否投射阴影。",
+            "title": "Castshadow",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "color",
+          "intensity",
+          "position",
+          "castShadow"
+        ],
+        "title": "StageLight",
+        "type": "object"
+      },
       "StageMotion": {
         "additionalProperties": false,
         "properties": {
@@ -27408,6 +28155,26 @@
             "pattern": "^#[0-9a-fA-F]{6}$",
             "title": "Color",
             "type": "string"
+          },
+          "visible": {
+            "default": true,
+            "description": "Whether this object is displayed.",
+            "title": "Visible",
+            "type": "boolean"
+          },
+          "locked": {
+            "default": false,
+            "description": "Whether edits to this object are blocked.",
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "opacity": {
+            "default": 1,
+            "description": "Layer opacity from zero to one.",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Opacity",
+            "type": "number"
           },
           "keyframes": {
             "default": [],
@@ -27509,6 +28276,9 @@
           "kind",
           "name",
           "color",
+          "visible",
+          "locked",
+          "opacity",
           "keyframes",
           "motionClips",
           "asset",
@@ -31043,6 +31813,7 @@
             "canvas.show": "#/$defs/CanvasShowCommand",
             "canvas.update": "#/$defs/CanvasUpdateCommand",
             "creation.batch": "#/$defs/BatchCommand",
+            "director.apply": "#/$defs/DirectorApplyCommand",
             "editor.create": "#/$defs/EditorCreateCommand",
             "editor.save": "#/$defs/EditorSaveCommand",
             "generation.submit": "#/$defs/GenerationSubmitCommand",
@@ -31179,6 +31950,9 @@
           },
           {
             "$ref": "#/$defs/EditorSaveCommand"
+          },
+          {
+            "$ref": "#/$defs/DirectorApplyCommand"
           },
           {
             "$ref": "#/$defs/HistoryUndoCommand"

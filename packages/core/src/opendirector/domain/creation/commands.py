@@ -7,7 +7,7 @@ from pydantic import ConfigDict, Field, TypeAdapter, create_model, model_validat
 from .assets import AssetRef, MediaMetadata
 from .base import Contract, Digest, GenerationKind, Identifier, MediaKind, ObjectVersion, Point, Positive, PositiveInt, Revision, digest, unique
 from .canvas import CanvasItem
-from .editors import EditorDocument
+from .editors import DirectorDocument, EditorDocument
 from opendirector.domain.rule_facts import PROMPT_MAX_LENGTH
 from .generation import GenerationSpec, Job, PromptPart, Reference
 
@@ -264,6 +264,10 @@ class EditorWrite(Contract):
     document: EditorDocument = Field(description='Editable document owned by this operation.')
 
 
+class DirectorApply(Contract):
+    document: DirectorDocument = Field(description='Authoritative Director Stage document applied atomically.')
+
+
 class HistoryReplay(Contract):
     targetCommandId: UUID = Field(description='Historical command to undo or redo.')
 
@@ -297,9 +301,9 @@ class CommandBase(Contract):
             raise ValueError('Submission version differs from expected spec version')
         if self.type == 'timeline.publishRender' and payload.expectedOutputRevision is not None and versions[('canvas_item', payload.outputId)] != payload.expectedOutputRevision:
             raise ValueError('Output revision differs from its expected version')
-        if self.type in {'generationSpec.update', 'editor.save', 'reference.update', 'reference.restore'}:
+        if self.type in {'generationSpec.update', 'editor.save', 'director.apply', 'reference.update', 'reference.restore'}:
             obj = (payload.spec if self.type == 'generationSpec.update' else
-                   payload.document if self.type == 'editor.save' else payload.reference)
+                   payload.document if self.type in {'editor.save', 'director.apply'} else payload.reference)
             if versions[required[0]] != obj.revision:
                 raise ValueError('Payload version differs from its expected version')
         return self
@@ -339,6 +343,8 @@ class CommandBase(Contract):
         elif self.type == 'result.select':
             required = [('generation_spec', payload.specId)]
         elif self.type == 'editor.save':
+            required = [('editor_document', payload.document.id)]
+        elif self.type == 'director.apply':
             required = [('editor_document', payload.document.id)]
         return required
 
@@ -382,6 +388,7 @@ _COMMANDS = (
     ('ResultSelectCommand', 'result.select', ResultSelect, 'Adopt an existing generation result.'),
     ('EditorCreateCommand', 'editor.create', EditorWrite, 'Create an editable document.'),
     ('EditorSaveCommand', 'editor.save', EditorWrite, 'Save an editable document.'),
+    ('DirectorApplyCommand', 'director.apply', DirectorApply, 'Apply an authoritative Director Stage document atomically.'),
     ('HistoryUndoCommand', 'history.undo', HistoryReplay, 'Undo a recorded reversible command.'),
     ('HistoryRedoCommand', 'history.redo', HistoryReplay, 'Reapply an undone command.'),
 )
@@ -394,7 +401,7 @@ for _name, _type, _payload, _description in _COMMANDS:
 
 _BATCH_TYPES = {'canvas.show', 'canvas.move', 'canvas.update', 'canvas.hide', 'canvas.materialize', 'canvas.applyEdit',
                 'canvas.configure', 'canvas.attachEditor', 'canvas.detachEditor', 'generationSpec.create', 'generationSpec.update',
-                'reference.add', 'reference.update', 'reference.restore', 'reference.remove', 'editor.create', 'editor.save', 'result.select', 'generationSpec.setPrompt'}
+                'reference.add', 'reference.update', 'reference.restore', 'reference.remove', 'editor.create', 'editor.save', 'director.apply', 'result.select', 'generationSpec.setPrompt'}
 _OPERATIONS = tuple(create_model(name + 'Operation', __base__=Contract,
                     __doc__=description, type=(Literal[kind], Field(description='Operation discriminator.')),
                     payload=(payload, Field(description=description)))

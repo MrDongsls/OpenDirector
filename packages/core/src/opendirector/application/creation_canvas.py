@@ -423,6 +423,24 @@ class CreationCanvas:
             raise ContractError('missing_object', '业务对象不存在。', object_id)
         return obj
 
+    @staticmethod
+    def _validate_director_locks(old, new):
+        """Reject edits to locked stage objects before the document is mutated."""
+        if old.get('kind') != 'director' or new.get('kind') != 'director':
+            raise ContractError('role_restricted', 'director.apply 只能保存 Director Stage 文档。 director.apply only accepts Director Stage documents.', UUID(str(old['id'])))
+        previous = {str(item['id']): item for item in old['data'].get('objects', [])}
+        following = {str(item['id']): item for item in new['data'].get('objects', [])}
+        for object_id, item in previous.items():
+            if not item.get('locked'):
+                continue
+            next_item = following.get(object_id)
+            if next_item is None:
+                raise ContractError('role_restricted', 'Locked stage objects cannot be removed. 已锁定的舞台对象不能删除。')
+            unlocked_only = dict(next_item)
+            unlocked_only['locked'] = True
+            if unlocked_only != item:
+                raise ContractError('role_restricted', 'Locked stage objects cannot be modified; unlock in a separate command first. 已锁定的舞台对象不能修改，请先单独解锁。')
+
     @classmethod
     def _editable(cls, data, item_id, *, unlocking=False):
         item = cls._get(data, 'canvas_item', item_id)
@@ -484,7 +502,7 @@ class CreationCanvas:
 
     def _mutate(self, data, kind, payload):
         value = payload.model_dump(mode='json', exclude_unset=True)
-        if kind in {'editor.create', 'editor.save'} and payload.document.kind == 'timeline':
+        if kind in {'editor.create', 'editor.save', 'director.apply'} and payload.document.kind == 'timeline':
             self._validate_timeline(payload.document, ProjectSnapshot.model_validate(data))
         if kind == 'canvas.publishMedia':
             from .creation_media_publication import publish_media
@@ -506,10 +524,12 @@ class CreationCanvas:
             if key == 'spec' and obj['currentResultId'] is not None:
                 raise ContractError('invalid_input', '新配置不能指定生成结果。')
             data[collection].append(obj)
-        elif kind in {'generationSpec.update', 'editor.save'}:
+        elif kind in {'generationSpec.update', 'editor.save', 'director.apply'}:
             key, object_type = ('spec', 'generation_spec') if kind.startswith('generation') else ('document', 'editor_document')
             obj = getattr(payload, key).model_dump(mode='json')
             old = self._get(data, object_type, obj['id'])
+            if kind in {'editor.save', 'director.apply'} and payload.document.kind == 'director':
+                self._validate_director_locks(old, obj)
             immutable = ('kind', 'purpose', 'currentResultId') if key == 'spec' else ('kind',)
             if any(obj[field] != old[field] for field in (*immutable, 'projectId')):
                 raise ContractError('role_restricted', '配置编辑不能修改对象角色或结果选择。', UUID(obj['id']))

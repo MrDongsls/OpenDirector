@@ -146,17 +146,18 @@ try {
       `data:image/png;base64,${b.toString("base64")}`,
     ]);
 
-  // Rest pose before any clip is bound, for the leave-the-clip comparison.
-  await playhead.fill("0.1");
-  await page.waitForTimeout(200);
-  const rest = await viewport.screenshot();
-
   await playhead.fill("1");
   await page
     .getByRole("button", { name: "Add motion at playhead", exact: true })
     .click();
   await page.getByLabel("Motion 1", { exact: true }).waitFor();
-  // The clip spans [1, 2]: 1.5 is inside it, 0.1 has left it again.
+  // Rest baseline with the clip already present: the viewport shows a
+  // persistent indicator on objects carrying a clip, so the pose comparison
+  // must not straddle that change. The clip spans [1, 2].
+  await playhead.fill("0.1");
+  await page.waitForTimeout(200);
+  const rest = await viewport.screenshot();
+  // 1.5 is inside the clip, 0.1 has left it again.
   await playhead.fill("1.5");
   await page.waitForTimeout(200);
   const animated = await viewport.screenshot();

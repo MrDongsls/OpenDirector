@@ -52,9 +52,10 @@ const page = await browser.newPage({
       }
     : {}),
 });
-await page.addInitScript(() =>
-  localStorage.setItem("opendirector.modelSetup.v1", "dismissed"),
-);
+await page.addInitScript(() => {
+  localStorage.setItem("opendirector.modelSetup.v1", "dismissed");
+  localStorage.setItem("opendirector.locale.v1", "en-US");
+});
 page.setDefaultTimeout(20000);
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));

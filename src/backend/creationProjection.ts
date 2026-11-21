@@ -1697,10 +1697,11 @@ export class CreationProjection {
           );
           if (!same(doc, previous)) {
             expect("editor_document", current);
-            operations.push({
-              type: "editor.save",
-              payload: { document: doc },
-            });
+            operations.push(
+              doc.kind === "director"
+                ? { type: "director.apply", payload: { document: doc } }
+                : { type: "editor.save", payload: { document: doc } },
+            );
           }
         }
         binding = {

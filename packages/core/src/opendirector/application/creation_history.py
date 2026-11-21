@@ -16,7 +16,7 @@ EDITABLE = {'canvasItems', 'generationSpecs', 'references', 'editorDocuments'}
 ABSENT = object()
 UNDOABLE = {'canvas.createGeneration', 'creation.batch', 'canvas.show', 'canvas.hide', 'canvas.move', 'canvas.update', 'canvas.configure',
     'canvas.materialize', 'canvas.applyEdit', 'timeline.publishRender', 'canvas.publishMedia', 'canvas.applyVersion', 'canvas.attachEditor', 'canvas.detachEditor', 'generationSpec.update', 'generationSpec.restore',
-    'reference.add', 'reference.update', 'reference.restore', 'reference.remove', 'result.select', 'editor.save', 'generationSpec.setPrompt'}
+    'reference.add', 'reference.update', 'reference.restore', 'reference.remove', 'result.select', 'editor.save', 'director.apply', 'generationSpec.setPrompt'}
 
 
 class Preview(Contract):
@@ -257,6 +257,11 @@ class CreationHistory:
             owner = binding.get('objectRef') if binding['role'] == 'editor' else None
             if (owner and owner['id'] in changed) or any(editor['id'] in changed for editor in item.get('editors', [])):
                 CreationCanvas._editable(current, item['id'])
+        previous_docs = {str(doc.id): doc.model_dump(mode='json') for doc in before.editorDocuments}
+        for document in data['editorDocuments']:
+            old = previous_docs.get(document['id'])
+            if old and old.get('kind') == 'director' and old != document:
+                CreationCanvas._validate_director_locks(old, document)
 
     def version_counts(self, project_id):
         # Counting only reads snapshots; copying every record here made the

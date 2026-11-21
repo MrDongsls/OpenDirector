@@ -2,15 +2,22 @@ import { useEditorCommit, type EditorApplyResult } from "./useEditorCommit";
 import {
   useEffect,
   useId,
+  useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import {
+  TransformControls,
+  TransformControlsGizmo,
+} from "three/addons/controls/TransformControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { clone as cloneSkinnedObject } from "three/addons/utils/SkeletonUtils.js";
 import type { CanvasNode, StageStillItem } from "./model";
 import type {
+  Asset,
   AssetRef,
   DirectorOutputPlanInput,
 } from "../contracts/generated.ts";
@@ -22,6 +29,7 @@ import {
   sampleStage,
   sampleStageCamera,
   editStageObjectAt,
+  editStageObjectPlacement,
   editStageCameraAt,
   captureStageFrame,
   stageFrameTimes,
@@ -37,6 +45,7 @@ import {
 import type {
   LocalStageDocument,
   StageCamera,
+  StageCameraChannels,
   StageSample,
   StageSampleObject,
   StageMotionClip,
@@ -46,6 +55,15 @@ import type {
   StageAssetRole,
   Vector3Value,
 } from "./stageDocument";
+import {
+  createDirectorStageViewState,
+  directorStageViewReducer,
+} from "./directorStageViewState";
+import type {
+  DirectorStageLeftTab,
+  DirectorStageInteractionMode,
+  DirectorStageViewAction,
+} from "./directorStageViewState";
 import {
   commitStageHistory,
   createStageHistory,
@@ -60,12 +78,31 @@ import {
   type StageMotion,
 } from "./stageMotion";
 import { encodeMp4 } from "./mp4Export";
+import {
+  projectStageEnvironment,
+  STAGE_GROUND_NAME,
+  STAGE_GRID_NAME,
+  STAGE_LIGHT_NAMES,
+  STAGE_ENVIRONMENT_PRESETS,
+  type StageEnvironmentDescriptor,
+} from "./stageEnvironment.ts";
 import { downloadFile, downloadFilename } from "./assets";
+import { assetReference } from "../backend/creationClient.ts";
 import { withMediaDuration } from "./editorMedia";
 import { mediaBlobDataUrl } from "./localMediaRuntime";
 import type { LinkedMediaResult } from "./linkedResults";
 import { useI18n } from "../i18n/I18nProvider.tsx";
 import type { MessageKey } from "../i18n/types.ts";
+import {
+  projectStageTimeline,
+  snapStageTimelineTime,
+  type StageTimelineChannel,
+  type StageTimelineTrack,
+  editStageCameraChannelAt,
+  editStageObjectTransformChannelAt,
+  removeStageTimelineKeyframe,
+  type StageTimelineKeyframeTarget,
+} from "./stageTimeline.ts";
 
 export interface DirectorStageProps {
   node: CanvasNode;
@@ -83,6 +120,8 @@ export interface DirectorStageProps {
   /** Whether a pinned asset is registered in the currently open project;
    * stage JSON imports reject objects pinning assets it reports as absent. */
   isRegisteredAsset?: (asset: AssetRef) => boolean;
+  backgroundAssets?: readonly Asset[];
+  resolveAssetUrl?: (asset: AssetRef) => Promise<string>;
 }
 interface LoadedStageAsset {
   scene: THREE.Object3D;
@@ -106,14 +145,105 @@ interface StageRuntime {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
+  translate: TransformControls;
+  rotate: TransformControls;
+  scale: TransformControls;
   root: THREE.Group;
   grid: THREE.GridHelper;
+  /** Viewport-local helper group (motion paths, height guides). */
+  helpers: THREE.Group;
   imported: Map<string, ImportedRuntime>;
   /** In-flight or resolved loads keyed by pinned asset id or source URL, so
    * concurrent effect runs share one load and one set of GPU resources. */
   assetCache: Map<string, Promise<LoadedStageAsset>>;
 }
-const vector = (value: THREE.Vector3): Vector3Value => ({
+
+const STAGE_GROUND_LEVEL = 0;
+const STAGE_UNDERGROUND_GROUND_OPACITY = 0.45;
+
+function hasBelowGroundObject(root: THREE.Group, bounds: THREE.Box3): boolean {
+  for (const child of root.children) {
+    if (!child.visible) continue;
+    bounds.setFromObject(child);
+    if (!bounds.isEmpty() && bounds.min.y < STAGE_GROUND_LEVEL - 0.001)
+      return true;
+  }
+  return false;
+}
+
+/**
+ * The ground is opaque during normal output, but the director viewport needs
+ * to reveal a subject that intersects it. A translucent ground veil keeps the
+ * below-ground part visible without changing the saved transform or camera
+ * render.
+ */
+function setStageGroundReveal(ground: THREE.Mesh, reveal: boolean) {
+  if (!(ground.material instanceof THREE.MeshStandardMaterial)) return;
+  const material = ground.material;
+  const opacity = reveal ? STAGE_UNDERGROUND_GROUND_OPACITY : 1;
+  const transparent = reveal;
+  const depthWrite = !reveal;
+  if (
+    material.transparent === transparent &&
+    material.opacity === opacity &&
+    material.depthWrite === depthWrite
+  )
+    return;
+  material.transparent = transparent;
+  material.opacity = opacity;
+  material.depthWrite = depthWrite;
+  material.needsUpdate = true;
+}
+
+function applyStageEnvironment(
+  scene: THREE.Scene,
+  descriptor: StageEnvironmentDescriptor,
+  groundVisible = descriptor.ground.visible,
+  renderer?: THREE.WebGLRenderer,
+) {
+  scene.background = new THREE.Color(descriptor.backgroundColor);
+  if (renderer) {
+    renderer.toneMapping = THREE.LinearToneMapping;
+    renderer.toneMappingExposure = descriptor.exposure;
+  }
+  const ground = scene.getObjectByName(STAGE_GROUND_NAME);
+  if (ground instanceof THREE.Mesh && ground.material instanceof THREE.MeshStandardMaterial) {
+    ground.material.color.set(descriptor.ground.color);
+    ground.visible = groundVisible;
+  }
+  for (const light of Object.values(descriptor.lights)) {
+    const object = scene.getObjectByName(STAGE_LIGHT_NAMES[light.id]);
+    if (!(object instanceof THREE.Light)) continue;
+    object.color.set(light.color);
+    object.intensity = light.intensity;
+    object.position.set(light.position.x, light.position.y, light.position.z);
+    object.castShadow = light.castShadow;
+  }
+}
+async function applyStageBackground(
+  scene: THREE.Scene,
+  descriptor: StageEnvironmentDescriptor,
+  resolveAssetUrl?: (asset: AssetRef) => Promise<string>,
+  isCurrent: () => boolean = () => true,
+) {
+  scene.background = new THREE.Color(descriptor.backgroundColor);
+  if (!descriptor.backgroundAsset || !resolveAssetUrl) return false;
+  try {
+    const url = await resolveAssetUrl(descriptor.backgroundAsset);
+    const texture = await new THREE.TextureLoader().loadAsync(url);
+    if (!isCurrent()) {
+      texture.dispose();
+      return false;
+    }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.userData.stageBackgroundAssetId = descriptor.backgroundAsset.assetId;
+    scene.background = texture;
+    return true;
+  } catch {
+    return false;
+  }
+}
+const vector = (value: THREE.Vector3 | THREE.Euler): Vector3Value => ({
   x: value.x,
   y: value.y,
   z: value.z,
@@ -329,6 +459,47 @@ const titles: Record<StageObject["kind"], MessageKey> = {
   halfCylinder: "editors.stage.ui.objectHalfCylinder",
   gltf: "editors.stage.ui.objectGltf",
 };
+const BUILTIN_CHARACTER_KINDS = ["person"] as const;
+const BUILTIN_OBJECT_KINDS = [
+  "box",
+  "sphere",
+  "cylinder",
+  "cone",
+  "pyramid",
+  "torus",
+  "plane",
+  "capsule",
+  "disk",
+  "arc",
+  "halfCylinder",
+] as const;
+
+function defaultStageObjectColor(kind: StageObject["kind"]): string {
+  if (kind === "person") return "#d0d0d0";
+  if (kind === "gltf") return "#b8c5ff";
+  return kind === "box" ? "#c4c4c4" : "#b8b8b8";
+}
+
+function createStageObjectTemplate(
+  kind: StageObject["kind"],
+  name: string,
+  id: string,
+): StageObject {
+  return {
+    id,
+    kind,
+    name,
+    color: defaultStageObjectColor(kind),
+    position: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+    visible: true,
+    locked: false,
+    opacity: 1,
+    keyframes: [],
+    motionClips: [],
+  };
+}
 function applyTransform(object: THREE.Object3D, value: StageTransform) {
   object.position.set(value.position.x, value.position.y, value.position.z);
   object.rotation.set(value.rotation.x, value.rotation.y, value.rotation.z);
@@ -544,6 +715,25 @@ function disposeObject(object: THREE.Object3D) {
   });
   materials.forEach((material) => material.dispose());
 }
+/** Removes the translate gizmo's center view-plane handle. Unlike the plane
+ * quads (showXY/showYZ/showXZ hide their visuals and pickers together), the
+ * controls offer no toggle for the center: the "XYZ" picker mesh must be
+ * dropped from the group itself so only the axis arrows stay grabbable, and
+ * its visible octahedron marker goes with it so nothing dead-looking remains.
+ * Only the translate handle groups are iterated; the rotate groups have no
+ * exact-"XYZ" child anyway, and the scale groups never show on this
+ * fixed-mode instance. */
+function removeCenterHandle(controls: TransformControls) {
+  const gizmo = controls.getHelper().children.find(
+    (child): child is TransformControlsGizmo =>
+      child instanceof TransformControlsGizmo,
+  );
+  if (!gizmo) return;
+  const { gizmo: handles, picker } = gizmo;
+  for (const group of [handles.translate, picker.translate])
+    for (const child of [...group.children])
+      if (child.name === "XYZ") group.remove(child);
+}
 function setCamera(runtime: StageRuntime, value: StageCamera) {
   runtime.camera.position.set(
     value.position.x,
@@ -562,12 +752,23 @@ function applyRoll(camera: THREE.PerspectiveCamera, value: StageCamera) {
 }
 function displayPose(runtime: StageRuntime, pose: StageSample) {
   setCamera(runtime, pose.camera);
+  // The gizmo owns object transforms while a drag is in flight; an async
+  // GLTF-load or undo re-pose must not stomp it.
+  if (runtime.translate.dragging || runtime.rotate.dragging) return;
   for (const child of runtime.root.children) {
     const data = pose.objects.find(
       (item) => item.id === child.userData.objectId,
     );
     if (data) {
       applyTransform(child, data);
+      child.visible = data.visible;
+      child.traverse((descendant) => {
+        if (descendant instanceof THREE.Mesh) {
+          const material = descendant.material as THREE.MeshStandardMaterial;
+          material.transparent = data.opacity < 1 || material.transparent;
+          material.opacity = data.opacity;
+        }
+      });
       poseJoints(child, data);
       applyImportedAnimation(runtime.imported, data);
     }
@@ -659,6 +860,8 @@ export function DirectorStage({
   onRender,
   onPrepareRender,
   isRegisteredAsset,
+  backgroundAssets,
+  resolveAssetUrl,
 }: DirectorStageProps) {
   const { t } = useI18n();
   const [historyState, setHistoryState] = useState(() =>
@@ -673,15 +876,80 @@ export function DirectorStage({
   const commit = useEditorCommit(onClose);
   const stage = historyState.present;
   const history = useRef(historyState);
-  const [selected, setSelected] = useState<string | null>(
-      () => stage.objects[0]?.id ?? null,
-    ),
-    [error, setError] = useState(""),
+  const [viewState, dispatchView] = useReducer(
+    directorStageViewReducer,
+    createDirectorStageViewState(stage.objects[0]?.id ?? null),
+  );
+  const selected = viewState.selectedObjectId;
+  const cameraPreview = viewState.cameraPreview;
+  const previewMode = viewState.previewMode;
+  const splitView = viewState.splitView.kind === "open";
+  const splitRatio = viewState.splitView.ratio;
+  const splitCameraId =
+    viewState.splitView.kind === "open"
+      ? viewState.splitView.cameraId
+      : null;
+  const viewFlags = viewState.viewFlags;
+  const viewMenu = viewState.viewMenuOpen;
+  const viewfinder = viewState.interactionMode.kind === "viewfinder";
+  const walkMode = viewState.interactionMode.kind === "roam";
+  const pendingPlacement =
+    viewState.interactionMode.kind === "placement"
+      ? viewState.interactionMode
+      : null;
+  const pendingKind = pendingPlacement?.objectKind ?? null;
+  const pendingPlacementSourceId = pendingPlacement?.sourceObjectId ?? null;
+  const assetRole = viewState.assetRole;
+  const leftTab = viewState.leftTab;
+  const treeGroups = viewState.treeGroups;
+  const helpOpen = viewState.helpOpen;
+  const drawerOpen = viewState.drawerOpen;
+  const selectedStills = viewState.selectedStillIds;
+  const previewStillId = viewState.previewStillId;
+  const exportOpen = viewState.exportDialog.kind === "open";
+  const exportSource = viewState.exportDialog.source;
+  const exportClarity = viewState.exportDialog.clarity;
+  const exportFps = viewState.exportDialog.fps;
+  const activeGizmo = viewState.activeGizmo;
+  const setView = (action: DirectorStageViewAction) => dispatchView(action);
+  const setSelected = (objectId: string | null) =>
+    setView({ type: "selectObject", objectId });
+  const setPendingKind = (
+      objectKind: StageObject["kind"] | null,
+      sourceObjectId: string | null = null,
+    ) =>
+    setView(
+      objectKind
+        ? { type: "armPlacement", objectKind, sourceObjectId }
+        : { type: "cancelPlacement" },
+    );
+  const setSplitRatio = (ratio: number) =>
+    setView({ type: "setSplitRatio", ratio });
+  const setSplitCameraId = (cameraId: string | null) =>
+    setView({ type: "setSplitCamera", cameraId });
+  const setViewMenu = (open: boolean) => setView({ type: "setViewMenu", open });
+  const setLeftTab = (tab: DirectorStageLeftTab) =>
+    setView({ type: "setLeftTab", tab });
+  const setAssetRole = (role: StageAssetRole) =>
+    setView({ type: "setAssetRole", role });
+  const setPreviewStillId = (stillId: string | null) =>
+    setView({ type: "setPreviewStill", stillId });
+  const setExportSource = (source: string) =>
+    setView({ type: "setExportSource", source });
+  const setExportClarity = (clarity: number) =>
+    setView({ type: "setExportClarity", clarity });
+  const setExportFps = (fps: number) => setView({ type: "setExportFps", fps });
+  const setDrawerOpen = (open: boolean) => setView({ type: "setDrawer", open });
+  const setHelpOpen = (open: boolean) => setView({ type: "setHelp", open });
+  const [error, setError] = useState(""),
     [playing, setPlaying] = useState(false),
     [time, setTime] = useState(0),
-    [previewMode, setPreviewMode] = useState<"static" | "dynamic">("static"),
     [ready, setReady] = useState(false);
   const [inserted, setInserted] = useState(false);
+  const [selectedTimelinePoint, setSelectedTimelinePoint] = useState<{
+    trackId: string;
+    pointId: string;
+  } | null>(null);
   const [confirmingClose, setConfirmingClose] = useState(false);
   const loadedStage = useRef(historyState.present);
   const consoleRef = useRef<HTMLDivElement>(null);
@@ -700,27 +968,38 @@ export function DirectorStage({
     };
   }, []);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
-  const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
   const [assetQuery, setAssetQuery] = useState("");
-  const [leftTab, setLeftTab] = useState<"characters" | "objects" | "cameras" | "background">("characters");
-  const [cameraPreview, setCameraPreview] = useState(false);
-  const [splitView, setSplitView] = useState(false);
-  const [splitRatio, setSplitRatio] = useState(0.5);
-  /** Split pane source: null runs the storyboard/active sample. */
-  const [splitCameraId, setSplitCameraId] = useState<string | null>(null);
+  const [treeQuery, setTreeQuery] = useState("");
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selected;
+  const actionBarRef = useRef<HTMLDivElement | null>(null);
+  const pendingKindRef = useRef<StageObject["kind"] | null>(null);
+  pendingKindRef.current = pendingKind;
+  const pendingPlacementRef = useRef<Extract<
+    DirectorStageInteractionMode,
+    { kind: "placement" }
+  > | null>(null);
+  pendingPlacementRef.current = pendingPlacement;
+  const viewSettingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const viewMenuRef = useRef<HTMLDivElement | null>(null);
+  const placeRef = useRef<(x: number, z: number) => void>(() => {});
   const splitRef = useRef({
     open: false,
     ratio: 0.5,
     cameraId: null as string | null,
   });
   splitRef.current = { open: splitView, ratio: splitRatio, cameraId: splitCameraId };
-  const [aspectMask, setAspectMask] = useState(false);
+  /** Viewport-local helpers. Never dirty the document and never reach the
+   * still or the MP4; the document keeps its own grid and aspect. */
+  const viewRef = useRef(viewFlags);
+  viewRef.current = viewFlags;
   const cameraPreviewRef = useRef(false);
   cameraPreviewRef.current = cameraPreview;
-  const [viewfinder, setViewfinder] = useState(false);
   const viewfinderRef = useRef(false);
   viewfinderRef.current = viewfinder;
-  const [helpOpen, setHelpOpen] = useState(false);
+  const walkRef = useRef(false);
+  walkRef.current = walkMode;
+  const prevWalk = useRef(false);
   /** One-time first-add help: survives reloads and sibling editors. */
   const helpSeen = useRef(
     (() => {
@@ -740,19 +1019,11 @@ export function DirectorStage({
     node.data.stills ?? [],
   );
   const [stillSaving, setStillSaving] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [selectedStills, setSelectedStills] = useState<Set<string>>(new Set());
-  const [previewStillId, setPreviewStillId] = useState<string | null>(null);
   /** Last state a prepare or apply committed. The unsaved-close guard and
    * the auto-poster rule must compare against this, not the mount-time
    * node props, because prepares commit mid-session. */
   const committedStills = useRef<StageStillItem[]>(node.data.stills ?? []);
   const committedStage = useRef<LocalStageDocument | null>(null);
-  const [exportOpen, setExportOpen] = useState(false);
-  /** "storyboard" or a camera rig id; fixed when the dialog opens. */
-  const [exportSource, setExportSource] = useState("");
-  const [exportClarity, setExportClarity] = useState(1280);
-  const [exportFps, setExportFps] = useState(30);
   const [renderedAt, setRenderedAt] = useState<{
     width: number;
     height: number;
@@ -776,11 +1047,69 @@ export function DirectorStage({
   timeRef.current = time;
   playingRef.current = playing;
   const sampled = sampleStage(stage, time);
+  const timeline = useMemo(() => projectStageTimeline(stage), [stage]);
+  const timelineDuration = Math.max(timeline.duration, Number.EPSILON);
+  const stageEnvironment = useMemo(
+    () => projectStageEnvironment(stage),
+    [stage.background, stage.environment, stage.lights],
+  );
+  const stageEnvironmentRef = useRef(stageEnvironment);
+  stageEnvironmentRef.current = stageEnvironment;
   const object = sampled.objects.find((item) => item.id === selected);
   const cameraValue = sampled.camera;
   const outputSize = stageOutputSize(stage.aspectRatio);
   const exportSize = stageOutputSize(stage.aspectRatio, exportClarity);
+  // The frame sits centered at a comfortable size (a 16:9 stage is 900px
+  // wide) and the timeline track, transport and storyboard match its width.
+  const stageStackWidth = `min(100%, calc(min(60vh, 506px) * ${outputSize.width / outputSize.height}))`;
   const frameTimes = stageFrameTimes(stage);
+  const setPlayhead = (value: number) => {
+    setPlaying(false);
+    setTime(snapStageTimelineTime(stageRef.current, value));
+  };
+  const timelineChannelLabel = (channel: StageTimelineChannel): string => {
+    const keys: Record<StageTimelineChannel, MessageKey> = {
+      position: "editors.stage.ui.trackPosition",
+      rotation: "editors.stage.ui.trackRotation",
+      scale: "editors.stage.ui.trackScale",
+      motion: "editors.stage.ui.trackMotion",
+      target: "editors.stage.ui.trackTarget",
+      up: "editors.stage.ui.trackUp",
+      focalLength: "editors.stage.ui.trackFocalLength",
+    };
+    return t(keys[channel]);
+  };
+  const timelineTrackLabel = (track: StageTimelineTrack): string =>
+    track.label.kind === "shots"
+      ? t("editors.stage.ui.trackShots")
+      : `${track.label.name} · ${timelineChannelLabel(track.label.channel)}`;
+  const selectedTimelineTrack = selectedTimelinePoint
+    ? timeline.tracks.find((track) => track.id === selectedTimelinePoint.trackId)
+    : undefined;
+  const selectedTimelineValue = selectedTimelineTrack && selectedTimelinePoint
+    ? selectedTimelineTrack.points.find((point) => point.id === selectedTimelinePoint.pointId)
+    : undefined;
+  const isVector = (value: unknown): value is Vector3Value =>
+    typeof value === "object" && value !== null &&
+    "x" in value && typeof value.x === "number" &&
+    "y" in value && typeof value.y === "number" &&
+    "z" in value && typeof value.z === "number";
+  const selectedTimelineVector = selectedTimelineValue && isVector(selectedTimelineValue.value)
+    ? selectedTimelineValue.value
+    : undefined;
+  const activeShot = stage.shots.find(
+    (shot) =>
+      time >= shot.start &&
+      (time < shot.start + shot.duration ||
+        (time === stage.duration && time === shot.start + shot.duration)),
+  );
+  const activeCamera = stage.cameras.find((camera) => camera.id === sampled.cameraId);
+  const visibleObjectNames = sampled.objects.filter((item) => item.visible).map((item) => item.name);
+  const activeStateText = t("editors.stage.ui.activeState", {
+    shot: activeShot ? t("editors.stage.ui.shot", { number: stage.shots.indexOf(activeShot) + 1 }) : t("editors.stage.ui.noShot"),
+    camera: activeCamera?.name ?? sampled.cameraId,
+    objects: visibleObjectNames.length ? visibleObjectNames.slice(0, 3).join(", ") : t("editors.stage.ui.noObjects"),
+  });
   const installHistory = (next: StageHistory) => {
     if (next === history.current) return;
     history.current = next;
@@ -808,8 +1137,30 @@ export function DirectorStage({
       );
     }
   };
+  const applyEnvironmentPreset = (presetId: (typeof STAGE_ENVIRONMENT_PRESETS)[number]["preset"]) => {
+    const preset = STAGE_ENVIRONMENT_PRESETS.find((candidate) => candidate.preset === presetId);
+    if (!preset) return;
+    edit((current) => ({
+      ...current,
+      background: preset.background,
+      environment: {
+        ...current.environment,
+        preset: preset.preset,
+        groundColor: preset.groundColor,
+        groundVisible: preset.groundVisible,
+        exposure: preset.exposure,
+        backgroundAsset: current.environment.backgroundAsset,
+      },
+      lights: current.lights.map((light) => ({ ...light, ...preset.lights[light.id] })),
+    }));
+  };
   const navigate = (direction: "undo" | "redo") => {
     if (renderProgress !== null) return;
+    if (
+      runtime.current?.translate.dragging ||
+      runtime.current?.rotate.dragging
+    )
+      return;
     installHistory(navigateStageHistory(history.current, direction));
   };
   const editObject = (patch: Partial<StageObject>) => {
@@ -923,6 +1274,35 @@ export function DirectorStage({
   gestureEdit.current = edit;
   const shortcut = useRef(navigate);
   shortcut.current = navigate;
+  const selectedPose = () => {
+    const group = runtime.current?.root.children.find(
+      (child) => child.userData.objectId === selected,
+    );
+    if (!group) return undefined;
+    return {
+      position: vector(group.position),
+      rotation: vector(group.rotation),
+      scale: vector(group.scale),
+    };
+  };
+  const poseSelected = (pose: StageTransform) => {
+    const current = runtime.current;
+    const item = stageRef.current.objects.find(
+      (entry) => entry.id === selected,
+    );
+    const group = current?.root.children.find(
+      (child) => child.userData.objectId === selected,
+    );
+    if (!current || !item || !group) return;
+    group.position.set(pose.position.x, pose.position.y, pose.position.z);
+    group.rotation.set(pose.rotation.x, pose.rotation.y, pose.rotation.z);
+    group.scale.set(pose.scale.x, pose.scale.y, pose.scale.z);
+    gestureEdit.current((doc) =>
+      item.keyframes.length
+        ? editStageObjectAt(doc, item.id, timeRef.current, pose)
+        : editStageObjectPlacement(doc, item.id, pose),
+    );
+  };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target;
@@ -938,7 +1318,55 @@ export function DirectorStage({
         event.preventDefault();
         event.stopPropagation();
         shortcut.current(event.shiftKey ? "redo" : "undo");
+        return;
       }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // A focused range slider owns its arrow keys; so does the page scroll.
+      const arrows = event.key.startsWith("Arrow");
+      if (
+        target instanceof HTMLInputElement &&
+        target.type === "range" &&
+        arrows
+      )
+        return;
+      if (event.key === "1") {
+        setView({ type: "setGizmo", gizmo: "translate" });
+        return;
+      }
+      if (event.key === "2") {
+        setView({ type: "setGizmo", gizmo: "rotate" });
+        return;
+      }
+      if (event.key === "3") {
+        setView({ type: "setGizmo", gizmo: "scale" });
+        return;
+      }
+      if (event.key.toLowerCase() === "g") {
+        const pose = selectedPose();
+        if (pose)
+          poseSelected({ ...pose, position: { ...pose.position, y: 0 } });
+        return;
+      }
+      if (!arrows) return;
+      event.preventDefault();
+      const pose = selectedPose();
+      if (!pose) return;
+      const step = event.shiftKey ? 0.5 : 0.1;
+      const delta = {
+        ArrowLeft: { x: -step, z: 0 },
+        ArrowRight: { x: step, z: 0 },
+        ArrowUp: { x: 0, z: -step },
+        ArrowDown: { x: 0, z: step },
+      }[event.key as "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"];
+      if (!delta) return;
+      poseSelected({
+        ...pose,
+        position: {
+          x: pose.position.x + delta.x,
+          y: pose.position.y,
+          z: pose.position.z + delta.z,
+        },
+      });
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -978,6 +1406,11 @@ export function DirectorStage({
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.append(renderer.domElement);
+    const pipCanvas = document.createElement("canvas");
+    pipCanvas.className = "cw-stage-pipcanvas";
+    pipCanvas.setAttribute("aria-hidden", "true");
+    const pipContext = pipCanvas.getContext("2d");
+    container.append(pipCanvas);
     const scene = new THREE.Scene(),
       camera = new THREE.PerspectiveCamera(45, 16 / 9, 0.05, 1000),
       controls = new OrbitControls(camera, renderer.domElement),
@@ -987,37 +1420,73 @@ export function DirectorStage({
     controls.maxDistance = 200;
     root.name = "stage-objects";
     scene.add(root);
-    const grid = new THREE.GridHelper(30, 30, 0x535b76, 0x2b344b);
+    // Created first on purpose: both controls listen on the same canvas and
+    // pointerdown listeners run in registration order, so the translate gizmo
+    // wins any pointerdown that hits both gizmos.
+    const translate = new TransformControls(camera, renderer.domElement);
+    translate.showXY = false;
+    translate.showYZ = false;
+    translate.showXZ = false;
+    removeCenterHandle(translate);
+    scene.add(translate.getHelper());
+    const rotate = new TransformControls(camera, renderer.domElement);
+    rotate.setMode("rotate");
+    // Rings sized to sit inside the arrow band instead of crossing it.
+    rotate.size = 0.65;
+    scene.add(rotate.getHelper());
+    const scale = new TransformControls(camera, renderer.domElement);
+    scale.setMode("scale");
+    scale.size = 0.5;
+    // A never-attached helper renders undefined internals into the export
+    // clone; it joins the scene only when first shown.
+    const grid = new THREE.GridHelper(30, 30, 0x5a5a5a, 0x3a3a3a);
+    grid.name = STAGE_GRID_NAME;
     scene.add(grid);
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(200, 200),
       new THREE.MeshStandardMaterial({ color: 0x202737, roughness: 1 }),
     );
+    ground.name = STAGE_GROUND_NAME;
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.01;
     ground.receiveShadow = true;
     scene.add(ground);
-    scene.add(new THREE.HemisphereLight(0xe2e7ff, 0x3c3354, 2.6));
+    const hemisphere = new THREE.HemisphereLight(0xffffff, 0x2a2a2a, 2.4);
+    hemisphere.name = STAGE_LIGHT_NAMES.hemisphere;
+    scene.add(hemisphere);
     const light = new THREE.DirectionalLight(0xffffff, 3.5);
+    light.name = STAGE_LIGHT_NAMES.key;
     light.position.set(5, 10, 6);
     light.castShadow = true;
     light.shadow.mapSize.set(2048, 2048);
     scene.add(light);
-    const fill = new THREE.DirectionalLight(0x8d88ff, 1.8);
+    const fill = new THREE.DirectionalLight(0xffffff, 1.6);
+    fill.name = STAGE_LIGHT_NAMES.fill;
     fill.position.set(-6, 5, -5);
     scene.add(fill);
     const pipCamera = new THREE.PerspectiveCamera(45, 16 / 9, 0.05, 1000);
+    // Viewport-local helpers live in one named group so captures and the
+    // export clone can drop them wholesale; object-name labels stay in the
+    // DOM and never touch a render.
+    const helpers = new THREE.Group();
+    helpers.name = "stage-helpers";
+    scene.add(helpers);
     const current: StageRuntime = {
       renderer,
       scene,
       camera,
       controls,
+      translate,
+      rotate,
+      scale,
       root,
       grid,
+      helpers,
       imported: new Map(),
       assetCache: new Map(),
     };
     runtime.current = current;
+    applyStageEnvironment(scene, stageEnvironmentRef.current, undefined, renderer);
     setCamera(current, sampleStage(stageRef.current, timeRef.current).camera);
     const resize = () => {
       // The viewport fills its panel; the stage aspect shows up in the
@@ -1032,6 +1501,83 @@ export function DirectorStage({
     const observer = new ResizeObserver(resize);
     observer.observe(container);
     resize();
+    const resizeFrame = requestAnimationFrame(resize);
+    const renderSize = new THREE.Vector2();
+    const objectBounds = new THREE.Box3();
+    window.addEventListener("resize", resize);
+    // View indicator: live pitch/yaw/FOV readout with a reset to the pose
+    // the stage opened with. Plain DOM writes keep React out of the frame.
+    const home = {
+      position: camera.position.clone(),
+      target: controls.target.clone(),
+      fov: camera.fov,
+    };
+    const indicator = document.createElement("div");
+    indicator.className = "cw-stage-viewinfo";
+    const readout = document.createElement("span");
+    const resetView = document.createElement("button");
+    resetView.type = "button";
+    resetView.textContent = t("editors.stage.ui.resetView");
+    resetView.addEventListener("click", () => {
+      camera.position.copy(home.position);
+      controls.target.copy(home.target);
+      camera.fov = home.fov;
+      camera.updateProjectionMatrix();
+      controls.update();
+    });
+    indicator.append(readout, resetView);
+    container.append(indicator);
+    const nameLayer = document.createElement("div");
+    nameLayer.className = "cw-stage-names";
+    container.append(nameLayer);
+    const nameTags = new Map<string, HTMLSpanElement>();
+    const syncNameTags = () => {
+      const objects = stageRef.current.objects;
+      for (const object of objects) {
+        let tag = nameTags.get(object.id);
+        if (!tag) {
+          tag = document.createElement("span");
+          tag.className = "cw-stage-name";
+          nameTags.set(object.id, tag);
+          nameLayer.append(tag);
+        }
+        if (tag.textContent !== object.name) tag.textContent = object.name;
+      }
+      for (const [id, tag] of nameTags)
+        if (!objects.some((object) => object.id === id)) {
+          tag.remove();
+          nameTags.delete(id);
+        }
+    };
+    const nameAnchor = new THREE.Vector3();
+    const projectNameTags = () => {
+      const width = renderer.domElement.width,
+        height = renderer.domElement.height;
+      for (const [id, tag] of nameTags) {
+        const child = root.children.find(
+          (candidate) => candidate.userData.objectId === id,
+        );
+        if (!child) {
+          tag.style.display = "none";
+          continue;
+        }
+        child.getWorldPosition(nameAnchor);
+        const box = new THREE.Box3().setFromObject(child);
+        nameAnchor.y = (box.isEmpty() ? 1 : box.max.y) + 0.25;
+        nameAnchor.project(camera);
+        const inside =
+          nameAnchor.z > -1 &&
+          nameAnchor.z < 1 &&
+          nameAnchor.x > -1 &&
+          nameAnchor.x < 1 &&
+          nameAnchor.y > -1 &&
+          nameAnchor.y < 1;
+        tag.style.display = inside ? "" : "none";
+        tag.style.left = `${((nameAnchor.x + 1) / 2) * width}px`;
+        tag.style.top = `${((1 - nameAnchor.y) / 2) * height}px`;
+      }
+    };
+    let lastReadout = "";
     let gestureCameraId: string | null = null;
     const orbitStart = () => {
       setPlaying(false);
@@ -1053,6 +1599,54 @@ export function DirectorStage({
     };
     controls.addEventListener("start", orbitStart);
     controls.addEventListener("end", orbitEnd);
+    let dragTarget: THREE.Object3D | null = null;
+    // Both gizmos share one handler; whichever starts a drag disables its
+    // sibling so the released pointer cannot also grab the other gizmo.
+    const dragChanged =
+      (gizmo: TransformControls, siblings: TransformControls[]) =>
+      (event: { value: unknown }) => {
+        if (event.value) {
+          dragTarget = gizmo.object;
+          // The same pointerdown also started an orbit gesture; a drag frozen
+          // before any camera move must not commit a pose when it ends.
+          gestureCameraId = null;
+          setPlaying(false);
+          playingRef.current = false;
+          controls.enabled = false;
+          for (const sibling of siblings) sibling.enabled = false;
+          return;
+        }
+        controls.enabled = true;
+        for (const sibling of siblings) sibling.enabled = true;
+        // detach() never resets dragging, so this end event can still arrive
+        // after undo removed the object, or after a GLTF clone replaced the
+        // group; only a live subject commits. A keyframe-free subject places
+        // through its base transform; a keyframed one poses at the playhead,
+        // exactly like a numeric field edit on the same sampler.
+        const group = dragTarget;
+        dragTarget = null;
+        if (!group || gizmo.object !== group) return;
+        const item = stageRef.current.objects.find(
+          (entry) => entry.id === group.userData.objectId,
+        );
+        if (!item) return;
+        const pose = {
+          position: vector(group.position),
+          rotation: vector(group.rotation),
+          scale: vector(group.scale),
+        };
+        gestureEdit.current((current) =>
+          item.keyframes.length
+            ? editStageObjectAt(current, item.id, timeRef.current, pose)
+            : editStageObjectPlacement(current, item.id, pose),
+        );
+      };
+    const translateDragChanged = dragChanged(translate, [rotate, scale]);
+    const rotateDragChanged = dragChanged(rotate, [translate, scale]);
+    const scaleDragChanged = dragChanged(scale, [translate, rotate]);
+    translate.addEventListener("dragging-changed", translateDragChanged);
+    rotate.addEventListener("dragging-changed", rotateDragChanged);
+    scale.addEventListener("dragging-changed", scaleDragChanged);
     const raycaster = new THREE.Raycaster(),
       pointer = new THREE.Vector2();
     let start: { x: number; y: number; pointerId: number } | null = null;
@@ -1077,6 +1671,16 @@ export function DirectorStage({
         (-(event.clientY - rect.top) / rect.height) * 2 + 1,
       );
       raycaster.setFromCamera(pointer, camera);
+      // An armed preset lands where the click meets the ground plane;
+      // placement stays disabled while the viewfinder reframes the view.
+      if (pendingPlacementRef.current && !viewfinderRef.current) {
+        const hit = raycaster.ray.intersectPlane(
+          new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+          new THREE.Vector3(),
+        );
+        if (hit) placeRef.current(hit.x, hit.z);
+        return;
+      }
       let found: THREE.Object3D | undefined = raycaster.intersectObjects(
         root.children,
         true,
@@ -1092,6 +1696,54 @@ export function DirectorStage({
     window.addEventListener("blur", pointerCancel);
     renderer.domElement.addEventListener("pointerdown", pointerDown);
     renderer.domElement.addEventListener("pointerup", pointerUp);
+    // Walk mode: WASD/QE stride, Shift sprints, drag looks, Alt+wheel
+    // zooms the eye. Native listeners keep React out of the frame loop
+    // and the pose stays viewport-local (no gesture commit fires).
+    const walkKeys = new Set<string>();
+    const strideKeys = new Set(["w", "a", "s", "d", "q", "e", "shift"]);
+    const walkDown = (event: KeyboardEvent) => {
+      if (!walkRef.current) return;
+      const key = event.key.toLowerCase();
+      if (strideKeys.has(key)) {
+        walkKeys.add(key);
+        event.preventDefault();
+      }
+    };
+    const walkUp = (event: KeyboardEvent) =>
+      walkKeys.delete(event.key.toLowerCase());
+    let lookDrag: { x: number; y: number } | null = null;
+    const lookDown = (event: PointerEvent) => {
+      if (walkRef.current && event.button === 0 && event.isPrimary)
+        lookDrag = { x: event.clientX, y: event.clientY };
+    };
+    const lookMove = (event: PointerEvent) => {
+      if (!lookDrag) return;
+      const dx = event.clientX - lookDrag.x,
+        dy = event.clientY - lookDrag.y;
+      lookDrag = { x: event.clientX, y: event.clientY };
+      const euler = new THREE.Euler().setFromQuaternion(
+        camera.quaternion,
+        "YXZ",
+      );
+      euler.y -= dx * 0.004;
+      euler.x = THREE.MathUtils.clamp(euler.x - dy * 0.004, -1.5, 1.5);
+      camera.quaternion.setFromEuler(euler);
+    };
+    const lookUp = () => {
+      lookDrag = null;
+    };
+    const walkWheel = (event: WheelEvent) => {
+      if (!walkRef.current || !event.altKey) return;
+      event.preventDefault();
+      camera.fov = THREE.MathUtils.clamp(camera.fov - event.deltaY * 0.05, 10, 120);
+      camera.updateProjectionMatrix();
+    };
+    window.addEventListener("keydown", walkDown);
+    window.addEventListener("keyup", walkUp);
+    renderer.domElement.addEventListener("pointerdown", lookDown);
+    window.addEventListener("pointermove", lookMove);
+    window.addEventListener("pointerup", lookUp);
+    renderer.domElement.addEventListener("wheel", walkWheel, { passive: false });
     const contextLost = (event: Event) => {
       event.preventDefault();
       setPlaying(false);
@@ -1109,9 +1761,59 @@ export function DirectorStage({
       pipCamera.position.set(pose.position.x, pose.position.y, pose.position.z);
       applyRoll(pipCamera, pose);
       pipCamera.updateProjectionMatrix();
+      pipCamera.updateMatrixWorld(true);
       return pipCamera;
     };
     const render = () => {
+      pipCanvas.style.display = "none";
+      if (walkRef.current && walkKeys.size) {
+        const speed = walkKeys.has("shift") ? 0.15 : 0.05;
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        const right = new THREE.Vector3()
+          .crossVectors(forward, camera.up)
+          .normalize();
+        if (walkKeys.has("w")) camera.position.addScaledVector(forward, speed);
+        if (walkKeys.has("s")) camera.position.addScaledVector(forward, -speed);
+        if (walkKeys.has("a")) camera.position.addScaledVector(right, -speed);
+        if (walkKeys.has("d")) camera.position.addScaledVector(right, speed);
+        if (walkKeys.has("e")) camera.position.y += speed;
+        if (walkKeys.has("q")) camera.position.y -= speed;
+      }
+      // Viewport-local flags apply every frame: the document keeps its own
+      // grid default, helpers never reach captures, and DOM labels follow
+      // the orbit view only.
+      const flags = viewRef.current;
+      const environment = projectStageEnvironment(stageRef.current);
+      ground.visible = environment.ground.visible && flags.ground;
+      grid.visible = stageRef.current.grid && flags.grid;
+      helpers.visible = flags.motionPaths || flags.heightGuides;
+      const revealUnderground =
+        ground.visible && hasBelowGroundObject(root, objectBounds);
+      indicator.style.display = flags.viewIndicator ? "" : "none";
+      if (flags.objectNames) {
+        syncNameTags();
+        projectNameTags();
+        nameLayer.style.display = "";
+      } else nameLayer.style.display = "none";
+      const bar = actionBarRef.current;
+      if (bar) {
+        const child = root.children.find(
+          (candidate) => candidate.userData.objectId === selectedRef.current,
+        );
+        if (child) {
+          child.getWorldPosition(nameAnchor);
+          const box = new THREE.Box3().setFromObject(child);
+          nameAnchor.y = (box.isEmpty() ? 1 : box.max.y) + 0.45;
+          nameAnchor.project(camera);
+          const onscreen =
+            nameAnchor.z > -1 && nameAnchor.z < 1 && nameAnchor.x > -1 &&
+            nameAnchor.x < 1 && nameAnchor.y > -1 && nameAnchor.y < 1;
+          bar.style.display = onscreen ? "" : "none";
+          bar.style.left = `${((nameAnchor.x + 1) / 2) * renderer.domElement.width}px`;
+          bar.style.top = `${((1 - nameAnchor.y) / 2) * renderer.domElement.height}px`;
+        } else bar.style.display = "none";
+      }
       renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
       if (splitRef.current.open) {
         // Split view: the working orbit keeps the left share, the chosen
@@ -1125,9 +1827,11 @@ export function DirectorStage({
         renderer.setScissorTest(true);
         renderer.setViewport(0, 0, splitWidth, height);
         renderer.setScissor(0, 0, splitWidth, height);
+        setStageGroundReveal(ground, revealUnderground);
         renderer.render(scene, camera);
         renderer.setViewport(splitWidth, 0, width - splitWidth, height);
         renderer.setScissor(splitWidth, 0, width - splitWidth, height);
+        setStageGroundReveal(ground, false);
         renderer.render(
           scene,
           viewfinderRef.current
@@ -1141,22 +1845,72 @@ export function DirectorStage({
       // Viewfinder renders the stage camera as the main view; the preview
       // pass keeps the orbit view so the working frame is never lost.
       if (viewfinderRef.current) {
+        setStageGroundReveal(ground, false);
         renderer.render(scene, poseCameraFor());
       } else {
+        setStageGroundReveal(ground, revealUnderground);
         renderer.render(scene, camera);
       }
-      if (cameraPreviewRef.current) {
-        const previewCamera = viewfinderRef.current ? camera : poseCameraFor();
-        previewCamera.aspect ??= camera.aspect;
-        const width = Math.min(320, renderer.domElement.width * 0.25);
+      if (cameraPreviewRef.current && !viewfinderRef.current) {
+        setStageGroundReveal(ground, false);
+        const previewCamera = poseCameraFor();
+        const cssWidth = renderer.domElement.clientWidth || renderer.domElement.width;
+        const pixelRatio = renderer.domElement.width / Math.max(cssWidth, 1);
+        const inspectorWidth = (cssWidth >= 1100 ? 300 : 260) * pixelRatio;
+        const inset = 16 * pixelRatio;
+        const width = Math.min(320 * pixelRatio, renderer.domElement.width * 0.25);
         const height = width / (previewCamera.aspect || 16 / 9);
-        const x = renderer.domElement.width - width - 12;
-        const y = renderer.domElement.height - height - 64;
+        const x = renderer.domElement.width - inspectorWidth - inset - width;
+        const y = renderer.domElement.height - 68 * pixelRatio - height;
         renderer.setScissorTest(true);
         renderer.setViewport(x, y, width, height);
         renderer.setScissor(x, y, width, height);
+        // The main orbit pass populated the depth buffer. Clear only the
+        // preview rectangle so the camera pass can draw its own scene.
+        renderer.clearDepth();
         renderer.render(scene, previewCamera);
+        if (pipContext) {
+          const sourceX = Math.round(x);
+          const sourceY = Math.round(
+            renderer.domElement.height - y - height,
+          );
+          const sourceWidth = Math.round(width);
+          const sourceHeight = Math.round(height);
+          pipCanvas.width = sourceWidth;
+          pipCanvas.height = sourceHeight;
+          pipCanvas.style.display = "block";
+          pipCanvas.style.right = `${inspectorWidth / pixelRatio + inset / pixelRatio}px`;
+          pipCanvas.style.top = "68px";
+          pipCanvas.style.width = `${width / pixelRatio}px`;
+          pipCanvas.style.height = `${height / pixelRatio}px`;
+          pipContext.clearRect(0, 0, sourceWidth, sourceHeight);
+          pipContext.drawImage(
+            renderer.domElement,
+            sourceX,
+            sourceY,
+            sourceWidth,
+            sourceHeight,
+            0,
+            0,
+            sourceWidth,
+            sourceHeight,
+          );
+        }
         renderer.setScissorTest(false);
+      }
+      // The readout tracks where the eye actually looks, which in roam
+      // mode diverges from the parked orbit target.
+      const offset = walkRef.current
+        ? camera.getWorldDirection(new THREE.Vector3())
+        : camera.position.clone().sub(controls.target);
+      const pitch = THREE.MathUtils.radToDeg(
+        THREE.MathUtils.clamp(offset.y / (offset.length() || 1), -1, 1),
+      );
+      const yaw = THREE.MathUtils.radToDeg(Math.atan2(offset.x, offset.z));
+      const text = `${pitch.toFixed(0)}° / ${yaw.toFixed(0)}° · FOV ${camera.fov.toFixed(0)}°`;
+      if (text !== lastReadout) {
+        lastReadout = text;
+        readout.textContent = text;
       }
       frame = requestAnimationFrame(render);
     };
@@ -1170,12 +1924,29 @@ export function DirectorStage({
       observer.disconnect();
       controls.removeEventListener("start", orbitStart);
       controls.removeEventListener("end", orbitEnd);
+      translate.removeEventListener("dragging-changed", translateDragChanged);
+      rotate.removeEventListener("dragging-changed", rotateDragChanged);
+      scale.removeEventListener("dragging-changed", scaleDragChanged);
+      indicator.remove();
       controls.dispose();
       renderer.domElement.removeEventListener("pointercancel", pointerCancel);
       window.removeEventListener("blur", pointerCancel);
       renderer.domElement.removeEventListener("pointerdown", pointerDown);
       renderer.domElement.removeEventListener("pointerup", pointerUp);
+      window.removeEventListener("keydown", walkDown);
+      window.removeEventListener("keyup", walkUp);
+      renderer.domElement.removeEventListener("pointerdown", lookDown);
+      window.removeEventListener("pointermove", lookMove);
+      window.removeEventListener("pointerup", lookUp);
+      renderer.domElement.removeEventListener("wheel", walkWheel);
       renderer.domElement.removeEventListener("webglcontextlost", contextLost);
+      pipCanvas.remove();
+      translate.detach();
+      translate.dispose();
+      rotate.detach();
+      rotate.dispose();
+      scale.detach();
+      scale.dispose();
       disposeObject(scene);
       for (const pending of runtime.current?.assetCache.values() ?? [])
         void pending.then(
@@ -1270,6 +2041,15 @@ export function DirectorStage({
           );
           if (previous) {
             current.root.remove(previous);
+            // A mid-drag model swap kills the drag rather than continuing it
+            // on a detached group.
+            if (
+              previous === current.translate.object ||
+              previous === current.rotate.object
+            ) {
+              current.translate.detach();
+              current.rotate.detach();
+            }
             if (previous.userData.placeholder) disposeObject(previous);
           }
           const group = cloneImportedAsset(item, loaded);
@@ -1297,9 +2077,78 @@ export function DirectorStage({
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
-    current.scene.background = new THREE.Color(stage.background);
+    applyStageEnvironment(
+      current.scene,
+      stageEnvironment,
+      stageEnvironment.ground.visible && viewRef.current.ground,
+      current.renderer,
+    );
     current.grid.visible = stage.grid;
-  }, [stage.background, stage.grid, ready]);
+  }, [stage, stageEnvironment, ready]);
+  useEffect(() => {
+    const current = runtime.current;
+    if (!current) return;
+    let cancelled = false;
+    const isCurrent = () =>
+      !cancelled && runtime.current === current && stageEnvironmentRef.current === stageEnvironment;
+    void applyStageBackground(current.scene, stageEnvironment, resolveAssetUrl, isCurrent).then((available) => {
+      if (isCurrent() && stageEnvironment.backgroundAsset && !available)
+        setAssetNotice(t("editors.stage.ui.backgroundAssetUnavailable"));
+    });
+    return () => { cancelled = true; };
+  }, [stageEnvironment, ready, resolveAssetUrl, t]);
+  // Rebuild the motion paths and height guides whenever the trajectories
+  // or the objects change; visibility itself is a per-frame view flag.
+  useEffect(() => {
+    const current = runtime.current;
+    if (!current) return;
+    disposeObject(current.helpers);
+    current.helpers.clear();
+    const box = new THREE.Box3();
+    for (const object of stage.objects) {
+      const child = current.root.children.find(
+        (candidate) => candidate.userData.objectId === object.id,
+      );
+      const moving = object.keyframes.some(
+        (frame, index) =>
+          index > 0 &&
+          (frame.value.position.x !== object.keyframes[0]!.value.position.x ||
+            frame.value.position.y !== object.keyframes[0]!.value.position.y ||
+            frame.value.position.z !== object.keyframes[0]!.value.position.z),
+      );
+      if (moving) {
+        const points: THREE.Vector3[] = [];
+        for (let step = 0; step <= 40; step++) {
+          const at = (stage.duration * step) / 40;
+          const pose = sampleStage(stage, at).objects.find(
+            (item) => item.id === object.id,
+          );
+          if (pose) points.push(new THREE.Vector3(pose.position.x, 0.02, pose.position.z));
+        }
+        current.helpers.add(
+          new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(points),
+            new THREE.LineBasicMaterial({ color: 0x8e76d1 }),
+          ),
+        );
+      }
+      if (child) {
+        box.setFromObject(child);
+        if (!box.isEmpty() && box.max.y > 0.05) {
+          const base = object.position;
+          current.helpers.add(
+            new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(base.x, 0, base.z),
+                new THREE.Vector3(base.x, box.max.y, base.z),
+              ]),
+              new THREE.LineBasicMaterial({ color: 0x535b76 }),
+            ),
+          );
+        }
+      }
+    }
+  }, [stage, ready]);
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
@@ -1316,8 +2165,36 @@ export function DirectorStage({
   }, [selected, stage.objects, ready]);
   useEffect(() => {
     if (!runtime.current) return;
-    runtime.current.controls.enabled = renderProgress === null && !viewfinder;
-  }, [renderProgress, ready, viewfinder]);
+    runtime.current.controls.enabled =
+      renderProgress === null && !viewfinder && !walkMode;
+    // Leaving the walk mode needs a fresh orbit target ahead of the eye.
+    if (prevWalk.current && !walkMode && runtime.current) {
+      const forward = new THREE.Vector3();
+      runtime.current.camera.getWorldDirection(forward);
+      runtime.current.controls.target
+        .copy(runtime.current.camera.position)
+        .addScaledVector(forward, 5);
+    }
+    prevWalk.current = walkMode;
+  }, [renderProgress, ready, viewfinder, walkMode]);
+  useEffect(() => {
+    const current = runtime.current;
+    if (!current || !ready) return;
+    const item = stage.objects.find((entry) => entry.id === selected);
+    const group = current.root.children.find(
+      (child) => child.userData.objectId === selected,
+    );
+    const attach = (gizmo: TransformControls, visible: boolean) => {
+      if (item && !item.locked && group && renderProgress === null && visible) {
+        const helper = gizmo.getHelper();
+        if (!helper.parent) current.scene.add(helper);
+        gizmo.attach(group);
+      } else gizmo.detach();
+    };
+    attach(current.translate, activeGizmo === "translate");
+    attach(current.rotate, activeGizmo === "rotate");
+    attach(current.scale, activeGizmo === "scale");
+  }, [selected, stage.objects, ready, renderProgress, activeGizmo]);
   useEffect(() => {
     if (!runtime.current) return;
     const size = stageOutputSize(stage.aspectRatio);
@@ -1351,42 +2228,126 @@ export function DirectorStage({
     return () => cancelAnimationFrame(frame);
   }, [playing, previewMode]);
 
-  const addObject = (kind: StageObject["kind"]) => {
+  const isCharacter = (item: StageObject) =>
+    item.kind === "person" || (item.kind === "gltf" && item.role === "character");
+  const isProp = (item: StageObject) => !isCharacter(item);
+  const builtinKinds =
+    leftTab === "characters"
+      ? BUILTIN_CHARACTER_KINDS
+      : BUILTIN_OBJECT_KINDS;
+  const builtinPlacementTemplates = useMemo(() => {
+    const templates = new Map<StageObject["kind"], StageObject>();
+    for (const kind of builtinKinds) {
+      const template = createStageObjectTemplate(
+        kind,
+        t(titles[kind]),
+        `placement:${kind}`,
+      );
+      const thumbnailCapture = renderStageObjectThumbnailNow(template);
+      templates.set(
+        kind,
+        thumbnailCapture ? { ...template, thumbnailCapture } : template,
+      );
+    }
+    return templates;
+  }, [builtinKinds, t]);
+  const existingBuiltinCards = new Map<StageObject["kind"], StageObject>();
+  for (const item of stage.objects) {
+    if (!existingBuiltinCards.has(item.kind) && item.kind !== "gltf")
+      existingBuiltinCards.set(item.kind, item);
+  }
+  const placementCards = [
+    ...builtinKinds.map(
+      (kind) => existingBuiltinCards.get(kind) ?? builtinPlacementTemplates.get(kind)!,
+    ),
+    ...stage.objects.filter(
+      (item) =>
+        item.kind === "gltf" &&
+        (leftTab === "characters" ? isCharacter(item) : isProp(item)),
+    ),
+  ];
+  /** Centers the orbit view on a subject. View-only: no camera pose is
+   * committed, so focusing never dirties the document. */
+  const focusObject = (id: string) => {
+    setSelected(id);
+    const current = runtime.current;
+    const pose = sampleStage(stageRef.current, timeRef.current).objects.find(
+      (item) => item.id === id,
+    );
+    if (!current || !pose) return;
+    const target = new THREE.Vector3(
+      pose.position.x,
+      pose.position.y + 0.9,
+      pose.position.z,
+    );
+    const offset = current.camera.position
+      .clone()
+      .sub(current.controls.target)
+      .normalize()
+      .multiplyScalar(5.5);
+    current.controls.target.copy(target);
+    current.camera.position.copy(target).add(offset);
+    current.controls.update();
+  };
+  const addObject = (
+    kind: StageObject["kind"],
+    at?: { x: number; z: number },
+    template?: StageObject,
+  ) => {
     const id = crypto.randomUUID();
-    const color =
-      kind === "person"
-        ? "#d0d0d0"
-        : kind === "box"
-          ? "#c4c4c4"
-          : "#b8b8b8";
+    const source = template?.kind === kind ? template : undefined;
+    const templateName =
+      source?.name.replace(/\s+\d+$/, "") ?? t(titles[kind]);
     const thumbnailObject: StageObject = {
-      id,
-      kind,
-      name: t(titles[kind]),
-      color,
-      position: { x: 0, y: 0, z: 0 },
-      rotation: { x: 0, y: 0, z: 0 },
-      scale: { x: 1, y: 1, z: 1 },
-      keyframes: [],
-      motionClips: [],
+      ...createStageObjectTemplate(kind, templateName, id),
+      ...(source
+        ? {
+            color: source.color,
+            rotation: { ...source.rotation },
+            scale: { ...source.scale },
+            opacity: source.opacity,
+            ...(source.asset ? { asset: { ...source.asset } } : {}),
+            ...(source.source ? { source: source.source } : {}),
+            ...(source.thumbnailAsset
+              ? { thumbnailAsset: { ...source.thumbnailAsset } }
+              : {}),
+            ...(source.thumbnailCapture
+              ? { thumbnailCapture: source.thumbnailCapture }
+              : {}),
+            ...(source.thumbnailSource
+              ? { thumbnailSource: source.thumbnailSource }
+              : {}),
+            ...(source.role ? { role: source.role } : {}),
+            ...(source.format ? { format: source.format } : {}),
+            ...(source.animationNames
+              ? { animationNames: [...source.animationNames] }
+              : {}),
+            ...(source.hasAnimation !== undefined
+              ? { hasAnimation: source.hasAnimation }
+              : {}),
+          }
+        : {}),
     };
-    const thumbnailCapture = renderStageObjectThumbnailNow(thumbnailObject);
+    const thumbnailCapture =
+      thumbnailObject.thumbnailCapture ??
+      (thumbnailObject.thumbnailSource
+        ? undefined
+        : renderStageObjectThumbnailNow(thumbnailObject));
     edit((current) => ({
       ...current,
       objects: [
         ...current.objects,
         {
           ...thumbnailObject,
-          name: `${t(titles[kind])} ${current.objects.length + 1}`,
-          color:
-            kind === "person"
-              ? "#a09af9"
-              : kind === "box"
-                ? "#80c9c0"
-                : "#e6aa6b",
-          position: { x: current.objects.length * 1.3, y: 0, z: 0 },
+          name: `${templateName} ${current.objects.length + 1}`,
+          position: at
+            ? { x: at.x, y: 0, z: at.z }
+            : { x: current.objects.length * 1.3, y: 0, z: 0 },
           rotation: { x: 0, y: 0, z: 0 },
           scale: { x: 1, y: 1, z: 1 },
+          visible: true,
+          locked: false,
+          opacity: 1,
           keyframes: [],
           motionClips: [],
           ...(thumbnailCapture ? { thumbnailCapture } : {}),
@@ -1394,9 +2355,18 @@ export function DirectorStage({
       ],
     }));
     setSelected(id);
-    // First object in this browser: surface the console controls once so
-    // the keyboard and mouse bindings are discoverable before the scene
-    // grows. When two-step placement lands, the trigger moves there.
+  }
+  // Completing a placement is also the first-run teachable moment.
+  placeRef.current = (x, z) => {
+    const placement = pendingPlacementRef.current;
+    if (!placement) return;
+    const source = placement.sourceObjectId
+      ? stageRef.current.objects.find(
+          (item) => item.id === placement.sourceObjectId,
+        )
+      : undefined;
+    setPendingKind(null);
+    addObject(placement.objectKind, { x, z }, source);
     if (!helpSeen.current) {
       helpSeen.current = true;
       try {
@@ -1406,7 +2376,7 @@ export function DirectorStage({
       }
       setHelpOpen(true);
     }
-  }
+  };
   const presetCenter = (): Vector3Value => {
     const subject = sampleStage(stageRef.current, timeRef.current).objects.find(
       (entry) => entry.id === selected,
@@ -1446,6 +2416,22 @@ export function DirectorStage({
       }),
     );
   };
+  const duplicateObject = () => {
+    if (!selected) return;
+    const source = stageRef.current.objects.find(
+      (item) => item.id === selected,
+    );
+    if (!source) return;
+    const copy: StageObject = {
+      ...source,
+      id: crypto.randomUUID(),
+      name: `${source.name} 2`,
+      position: { ...source.position, x: source.position.x + 1.3 },
+      keyframes: [],
+    };
+    edit((current) => ({ ...current, objects: [...current.objects, copy] }));
+    setSelected(copy.id);
+  };
   const removeObject = () => {
     if (!selected) return;
     edit((current) => ({
@@ -1468,11 +2454,40 @@ export function DirectorStage({
     const previous = current.renderer.getSize(new THREE.Vector2());
     const ratio = current.renderer.getPixelRatio();
     const aspect = current.camera.aspect;
+    const environment = projectStageEnvironment(
+      parseLocalStageValue(stageRef.current, t),
+    );
+    const previousGroundVisible = current.scene.getObjectByName(STAGE_GROUND_NAME)?.visible;
+    const ground = current.scene.getObjectByName(STAGE_GROUND_NAME);
+    const previousGroundReveal =
+      ground instanceof THREE.Mesh &&
+      ground.material instanceof THREE.MeshStandardMaterial &&
+      ground.material.transparent &&
+      ground.material.opacity === STAGE_UNDERGROUND_GROUND_OPACITY;
+    const previousGridVisible = current.grid.visible;
+    const previousBackground = current.scene.background;
     current.renderer.setPixelRatio(1);
     current.renderer.setSize(size.width, size.height, false);
     current.camera.aspect = size.width / size.height;
     current.camera.updateProjectionMatrix();
+    const helpers = [current.translate, current.rotate].map((gizmo) => ({
+      helper: gizmo.getHelper(),
+      visible: gizmo.getHelper().visible,
+    }));
+    for (const { helper } of helpers) helper.visible = false;
+    // Viewport helpers (paths, guides) stay out of the captured frame.
+    const helpersVisible = current.helpers.visible;
+    current.helpers.visible = false;
     try {
+      if (ground instanceof THREE.Mesh) setStageGroundReveal(ground, false);
+      applyStageEnvironment(current.scene, environment, undefined, current.renderer);
+      if (
+        environment.backgroundAsset &&
+        previousBackground instanceof THREE.Texture &&
+        previousBackground.userData.stageBackgroundAssetId === environment.backgroundAsset.assetId
+      )
+        current.scene.background = previousBackground;
+      current.grid.visible = false;
       displayPose(current, sampleStage(stageRef.current, timeRef.current));
       current.renderer.render(current.scene, current.camera);
       return dom.toDataURL("image/png");
@@ -1481,6 +2496,28 @@ export function DirectorStage({
       current.renderer.setSize(previous.x, previous.y, false);
       current.camera.aspect = aspect;
       current.camera.updateProjectionMatrix();
+      const restoredEnvironment = stageEnvironmentRef.current;
+      applyStageEnvironment(
+        current.scene,
+        restoredEnvironment,
+        restoredEnvironment.ground.visible && viewRef.current.ground,
+        current.renderer,
+      );
+      void applyStageBackground(
+        current.scene,
+        restoredEnvironment,
+        resolveAssetUrl,
+        () => active.current && runtime.current === current && stageEnvironmentRef.current === restoredEnvironment,
+      );
+      current.grid.visible = previousGridVisible;
+      const restoredGround = current.scene.getObjectByName(STAGE_GROUND_NAME);
+      if (restoredGround instanceof THREE.Mesh) {
+        if (previousGroundVisible !== undefined)
+          restoredGround.visible = previousGroundVisible;
+        setStageGroundReveal(restoredGround, previousGroundReveal);
+      }
+      for (const { helper, visible } of helpers) helper.visible = visible;
+      current.helpers.visible = helpersVisible;
       current.renderer.render(current.scene, current.camera);
     }
   };
@@ -1518,18 +2555,12 @@ export function DirectorStage({
     selectedStills.has(item.id),
   );
   const toggleStill = (id: string) =>
-    setSelectedStills((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setView({ type: "toggleStillSelection", stillId: id });
   const deleteSelectedStills = () => {
     setStills((current) =>
       current.filter((item) => !selectedStills.has(item.id)),
     );
-    setPreviewStillId((id) => (id && selectedStills.has(id) ? null : id));
-    setSelectedStills(new Set());
+    setView({ type: "clearStillSelection" });
   };
   const downloadSelectedStills = async () => {
     for (const item of selectedStillItems) {
@@ -1610,12 +2641,16 @@ export function DirectorStage({
   const openExport = () => {
     // Storyboard is the default exactly when an edit list exists; otherwise
     // the active rig leads the per-camera options.
-    setExportSource(
-      stageRef.current.shots.length
+    setView({
+      type: "openExport",
+      source: stageRef.current.shots.length
         ? "storyboard"
         : stageRef.current.activeCameraId,
-    );
-    setExportOpen(true);
+      clarity: exportClarity,
+      // Seed the dialog from the persisted document once. Submit reads the
+      // dialog state so a user's later FPS choice remains authoritative.
+      fps: stage.fps,
+    });
   };
   /** mm:ss.d clock matching the export dialog of the reference console.
    * Arithmetic on total tenths so a rounded 59.96s renders 01:00.0, never
@@ -1723,6 +2758,9 @@ export function DirectorStage({
         position: { x: 0, y: 0, z: 0 },
         rotation: { x: 0, y: 0, z: 0 },
         scale: { x: 1, y: 1, z: 1 },
+        visible: true,
+        locked: false,
+        opacity: 1,
         keyframes: [],
         motionClips: [],
       };
@@ -1739,6 +2777,9 @@ export function DirectorStage({
             position: { x: current.objects.length * 1.3, y: 0, z: 0 },
             rotation: { x: 0, y: 0, z: 0 },
             scale: { x: 1, y: 1, z: 1 },
+            visible: true,
+            locked: false,
+            opacity: 1,
             keyframes: [],
             motionClips: [],
             ...(thumbnailCapture ? { thumbnailCapture } : {}),
@@ -1799,6 +2840,15 @@ export function DirectorStage({
     let scene: THREE.Scene | undefined;
     const materials = new Map<THREE.Material, THREE.Material>();
     let renderer: THREE.WebGLRenderer | undefined;
+    // The export scene must not contain the placement gizmos; restore them
+    // even on abort or throw, but only while this preview runtime still lives.
+    const helpers = [previewRuntime.translate, previewRuntime.rotate].map(
+      (gizmo) => ({
+        helper: gizmo.getHelper(),
+        inScene: gizmo.getHelper().parent === previewRuntime.scene,
+      }),
+    );
+    for (const { helper } of helpers) previewRuntime.scene.remove(helper);
     try {
       // The render's publication freezes the stage AND the stills draft:
       // captures made before this render are pinned with it, and the
@@ -1812,6 +2862,10 @@ export function DirectorStage({
       // Snapshot the scene only after preparation: a model whose preview
       // load lands while preparing would otherwise export as its placeholder.
       scene = previewRuntime.scene.clone(true);
+      applyStageEnvironment(scene, projectStageEnvironment(exportStage));
+      // The export must not contain the viewport helpers either.
+      scene.getObjectByName("stage-helpers")?.removeFromParent();
+      scene.getObjectByName(STAGE_GRID_NAME)?.removeFromParent();
       const root = scene.getObjectByName("stage-objects")!;
       const renderImported = new Map<string, ImportedRuntime>();
       for (const [id, binding] of previewRuntime.imported) {
@@ -1855,6 +2909,8 @@ export function DirectorStage({
       renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(size.width, size.height);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      applyStageEnvironment(scene, projectStageEnvironment(exportStage), undefined, renderer);
+      await applyStageBackground(scene, projectStageEnvironment(exportStage), resolveAssetUrl);
       renderer.shadowMap.enabled = true;
       const camera = new THREE.PerspectiveCamera(
         45,
@@ -1884,6 +2940,14 @@ export function DirectorStage({
             );
             if (object) {
               applyTransform(child, object);
+              child.visible = object.visible;
+              child.traverse((descendant) => {
+                if (descendant instanceof THREE.Mesh) {
+                  const material = descendant.material as THREE.MeshStandardMaterial;
+                  material.transparent = object.opacity < 1 || material.transparent;
+                  material.opacity = object.opacity;
+                }
+              });
               poseJoints(child, object);
               applyImportedAnimation(renderImported, object);
             }
@@ -1903,6 +2967,9 @@ export function DirectorStage({
             : t("editors.stage.ui.exportFailed"),
         );
     } finally {
+      for (const { helper, inScene } of helpers)
+        if (inScene && previewRuntime === runtime.current)
+          previewRuntime.scene.add(helper);
       // Geometry stays shared with the preview; cloned materials, renderer and shadows are export-owned.
       scene?.traverse((child) => {
         if (child instanceof THREE.DirectionalLight) child.shadow.dispose();
@@ -1984,6 +3051,110 @@ export function DirectorStage({
     if (dirty && !commit.saving) setConfirmingClose(true);
     else commit.close();
   };
+  const treeNeedle = treeQuery.trim().toLocaleLowerCase();
+  const matchesTreeQuery = (name: string) =>
+    !treeNeedle || name.toLocaleLowerCase().includes(treeNeedle);
+  const sceneTree = (
+    <section className="cw-stage-right-tree-panel cw-stage-right-tree">
+      <header className="cw-stage-panel-heading">
+        <span className="cw-stage-panel-icon" aria-hidden="true">
+          ☷
+        </span>
+        <h3>{t("editors.stage.ui.objectTreeTitle")}</h3>
+      </header>
+      <label className="cw-stage-tree-search">
+        <span className="cw-stage-visually-hidden">
+          {t("editors.stage.ui.objectSearchAria")}
+        </span>
+        <input
+          aria-label={t("editors.stage.ui.objectSearchAria")}
+          placeholder={t("editors.stage.ui.objectSearchPlaceholder")}
+          value={treeQuery}
+          onChange={(event) => setTreeQuery(event.target.value)}
+        />
+      </label>
+      <div className="cw-stage-tree-scroll">
+        <div className="cw-stage-tree" role="tree">
+          {(
+            [
+              ["characters", isCharacter, stage.objects.filter(isCharacter)],
+              ["objects", isProp, stage.objects.filter(isProp)],
+            ] as const
+          ).map(([group, _match, items]) => (
+            <div key={group} role="group">
+              <button
+                className="cw-stage-tree-head"
+                aria-expanded={treeGroups[group]}
+                onClick={() => setView({ type: "toggleTreeGroup", group })}
+              >
+                <span className="cw-stage-tree-chevron" aria-hidden="true">
+                  {treeGroups[group] ? "⌄" : "›"}
+                </span>
+                {t(
+                  `editors.stage.ui.tab${group[0]!.toUpperCase()}${group.slice(1)}` as never,
+                )}
+                {` (${items.length})`}
+              </button>
+              {treeGroups[group] &&
+                items
+                  .filter((item) => matchesTreeQuery(item.name))
+                  .map((item) => (
+                    <div className="cw-stage-tree-row" key={item.id} role="treeitem">
+                      <button
+                        aria-selected={selected === item.id}
+                        onClick={() => setSelected(item.id)}
+                      >
+                        <span style={{ background: item.color }} />
+                        {item.name}
+                      </button>
+                      <button
+                        className="cw-stage-row-action"
+                        aria-label={t("editors.stage.ui.focusObject", {
+                          name: item.name,
+                        })}
+                        onClick={() => focusObject(item.id)}
+                      >
+                        ◎
+                      </button>
+                    </div>
+                  ))}
+            </div>
+          ))}
+          <div role="group">
+            <button
+              className="cw-stage-tree-head"
+              aria-expanded={treeGroups.cameras}
+              onClick={() => setView({ type: "toggleTreeGroup", group: "cameras" })}
+            >
+              <span className="cw-stage-tree-chevron" aria-hidden="true">
+                {treeGroups.cameras ? "⌄" : "›"}
+              </span>
+              {t("editors.stage.ui.tabCameras")}
+              {` (${stage.cameras.length})`}
+            </button>
+            {treeGroups.cameras &&
+              stage.cameras
+                .filter((rig) => matchesTreeQuery(rig.name))
+                .map((rig) => (
+                  <div className="cw-stage-tree-row" key={rig.id} role="treeitem">
+                    <button
+                      aria-selected={stage.activeCameraId === rig.id}
+                      onClick={() =>
+                        edit((current) => ({
+                          ...current,
+                          activeCameraId: rig.id,
+                        }))
+                      }
+                    >
+                      {rig.name}
+                    </button>
+                  </div>
+                ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
   return (
     <div
       className="cw-domain-overlay"
@@ -1997,17 +3168,30 @@ export function DirectorStage({
         aria-modal="true"
         aria-labelledby={consoleId}
         tabIndex={-1}
-        className="cw-stage-console"
+        className={`cw-stage-console${viewfinder ? " is-viewfinder" : ""}`}
+        data-preview-mode={previewMode}
         style={
           {
             "--stage-aspect": String(outputSize.width / outputSize.height),
           } as React.CSSProperties
         }
+        onPointerDown={(event) => {
+          if (!viewMenu) return;
+          const target = event.target;
+          if (!(target instanceof Node)) return;
+          if (
+            viewMenuRef.current?.contains(target) ||
+            viewSettingsButtonRef.current?.contains(target)
+          )
+            return;
+          setViewMenu(false);
+        }}
         onKeyDown={(event) => {
           event.stopPropagation();
           if (event.key === "Escape") {
             event.preventDefault();
-            requestClose();
+            if (pendingPlacementRef.current) setPendingKind(null);
+            else requestClose();
           }
           if (event.key === "Tab") {
             const elements = [
@@ -2047,6 +3231,91 @@ export function DirectorStage({
         role="img"
         aria-label={t("editors.stage.ui.stageAria")}
       />
+      <div
+        className="cw-stage-gizmo"
+        role="group"
+        aria-label={t("editors.stage.ui.gizmoModeAria")}
+      >
+        {(["translate", "rotate", "scale"] as const).map((axis) => (
+          <button
+            key={axis}
+            data-icon={axis === "translate" ? "↔" : axis === "rotate" ? "⟳" : "↗"}
+            aria-pressed={activeGizmo === axis}
+            title={axis === "translate" ? "W" : axis === "rotate" ? "E" : "R"}
+            onClick={() =>
+              setView({ type: "setGizmo", gizmo: axis })
+            }
+          >
+            {t(
+              axis === "translate"
+                ? "editors.stage.ui.gizmoMove"
+                : axis === "rotate"
+                  ? "editors.stage.ui.gizmoRotate"
+                  : "editors.stage.ui.gizmoScale",
+            )}
+          </button>
+        ))}
+        <div className="cw-stage-view-settings-anchor">
+          <button
+            ref={viewSettingsButtonRef}
+            type="button"
+            data-icon="◉"
+            title={t("editors.stage.ui.viewSettings")}
+            aria-label={t("editors.stage.ui.viewSettingsRail")}
+            aria-expanded={viewMenu}
+            onClick={() => setView({ type: "toggleViewMenu" })}
+          >
+            {t("editors.stage.ui.viewSettings")}
+          </button>
+          {viewMenu && (
+            <div
+              ref={viewMenuRef}
+              className="cw-stage-viewmenu"
+              role="dialog"
+              aria-label={t("editors.stage.ui.viewSettings")}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  event.preventDefault();
+                  setViewMenu(false);
+                }
+              }}
+            >
+              {(
+                [
+                  ["ground", "viewGround"],
+                  ["grid", "viewGrid"],
+                  ["motionPaths", "viewMotionPaths"],
+                  ["objectNames", "viewObjectNames"],
+                  ["heightGuides", "viewHeightGuides"],
+                  ["aspectMask", "aspectMask"],
+                  ["viewIndicator", "viewIndicator"],
+                ] as const
+              ).map(([flag, label]) => (
+                <label key={flag}>
+                  <input
+                    type="checkbox"
+                    checked={viewFlags[flag]}
+                    onChange={(event) =>
+                      setView({
+                        type: "setViewFlag",
+                        flag,
+                        enabled: event.target.checked,
+                      })
+                    }
+                  />
+                  {t(`editors.stage.ui.${label}` as never)}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        {object?.keyframes.length ? (
+          <span className="cw-domain-note">
+            {t("editors.stage.ui.gizmoAnimatedHint")}
+          </span>
+        ) : null}
+      </div>
       {viewfinder && (
         <div className="cw-stage-fovbar">
           <label>
@@ -2070,7 +3339,26 @@ export function DirectorStage({
           </label>
         </div>
       )}
-      {aspectMask && <div className="cw-stage-mask" aria-hidden="true" />}
+      {viewFlags.aspectMask && (
+        <div className="cw-stage-mask" aria-hidden="true" />
+      )}
+      {selected && (
+        <div className="cw-stage-actionbar" ref={actionBarRef}>
+          <button onClick={duplicateObject}>
+            {t("editors.stage.ui.duplicateObject")}
+          </button>
+          <button onClick={removeObject}>
+            {t("editors.stage.ui.deleteObject")}
+          </button>
+        </div>
+      )}
+      {pendingKind && (
+        <div className="cw-stage-placehint" role="status">
+          {t("editors.stage.ui.placeHint", {
+            name: t(titles[pendingKind]),
+          })}
+        </div>
+      )}
       {cameraPreview && <div className="cw-stage-pipframe" aria-hidden="true" />}
       {splitView && (
         <>
@@ -2094,14 +3382,14 @@ export function DirectorStage({
               if (!bounds) return;
               const next =
                 (event.clientX - bounds.left) / bounds.width;
-              setSplitRatio(Math.min(0.8, Math.max(0.2, next)));
+              setSplitRatio(next);
             }}
             onKeyDown={(event) => {
               // Arrow keys nudge the split for keyboard users.
               if (event.key === "ArrowLeft")
-                setSplitRatio((ratio) => Math.max(0.2, ratio - 0.05));
+                setSplitRatio(splitRatio - 0.05);
               if (event.key === "ArrowRight")
-                setSplitRatio((ratio) => Math.min(0.8, ratio + 0.05));
+                setSplitRatio(splitRatio + 0.05);
             }}
           />
           <div
@@ -2130,7 +3418,7 @@ export function DirectorStage({
             ))}
             <button
               className="cw-stage-row-action"
-              onClick={() => setSplitView(false)}
+              onClick={() => setView({ type: "closeSplit" })}
             >
               {t("editors.stage.ui.splitExit")}
             </button>
@@ -2161,11 +3449,12 @@ export function DirectorStage({
                   !!stills.length && selectedStills.size === stills.length
                 }
                 onChange={(event) =>
-                  setSelectedStills(
-                    event.target.checked
-                      ? new Set(stills.map((item) => item.id))
-                      : new Set(),
-                  )
+                  setView({
+                    type: "setStillSelection",
+                    stillIds: event.target.checked
+                      ? stills.map((item) => item.id)
+                      : [],
+                  })
                 }
               />
               {t("editors.stage.ui.selectAllStills")}
@@ -2262,7 +3551,7 @@ export function DirectorStage({
               type="button"
               aria-pressed={previewMode === "static"}
               onClick={() => {
-                setPreviewMode("static");
+                setView({ type: "setPreviewMode", mode: "static" });
                 setPlaying(false);
               }}
             >
@@ -2272,7 +3561,7 @@ export function DirectorStage({
               type="button"
               aria-pressed={previewMode === "dynamic"}
               onClick={() => {
-                setPreviewMode("dynamic");
+                setView({ type: "setPreviewMode", mode: "dynamic" });
                 setPlaying(false);
               }}
             >
@@ -2360,7 +3649,7 @@ export function DirectorStage({
             title={t("editors.stage.ui.shotMaterials")}
             aria-label={t("editors.stage.ui.shotMaterials")}
             aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen((open) => !open)}
+            onClick={() => setView({ type: "toggleDrawer" })}
           >
             {t("editors.stage.ui.shotMaterials")}
             {stills.length ? ` (${stills.length})` : ""}
@@ -2378,7 +3667,7 @@ export function DirectorStage({
             data-icon="?"
             title={t("editors.stage.ui.shortcuts")}
             aria-label={t("editors.stage.ui.shortcuts")}
-            onClick={() => setHelpOpen((open) => !open)}
+            onClick={() => setView({ type: "toggleHelp" })}
           >
             {t("editors.stage.ui.shortcuts")}
           </button>
@@ -2395,15 +3684,8 @@ export function DirectorStage({
             aria-label={t("editors.stage.ui.viewfinder")}
             aria-pressed={viewfinder}
             onClick={() => {
-              setViewfinder((current) => {
-                const next = !current;
-                if (next) {
-                  liveFov.current = null;
-                  setCameraPreview(true);
-                  setAspectMask(true);
-                }
-                return next;
-              });
+              if (!viewfinder) liveFov.current = null;
+              setView({ type: "toggleViewfinder" });
             }}
           >
             {t("editors.stage.ui.viewfinder")}
@@ -2413,7 +3695,7 @@ export function DirectorStage({
             title={t("editors.stage.ui.cameraPreview")}
             aria-label={t("editors.stage.ui.cameraPreview")}
             aria-pressed={cameraPreview}
-            onClick={() => setCameraPreview((current) => !current)}
+            onClick={() => setView({ type: "toggleCameraPreview" })}
           >
             {t("editors.stage.ui.cameraPreview")}
           </button>
@@ -2421,10 +3703,18 @@ export function DirectorStage({
             data-icon="▣"
             title={t("editors.stage.ui.aspectMask")}
             aria-label={t("editors.stage.ui.aspectMask")}
-            aria-pressed={aspectMask}
-            onClick={() => setAspectMask((current) => !current)}
+            aria-pressed={viewFlags.aspectMask}
+            onClick={() =>
+              setView({ type: "toggleViewFlag", flag: "aspectMask" })
+            }
           >
             {t("editors.stage.ui.aspectMask")}
+          </button>
+          <button
+            aria-pressed={walkMode}
+            onClick={() => setView({ type: "toggleRoam" })}
+          >
+            {t("editors.stage.ui.walkMode")}
           </button>
           <div className="cw-stage-topactions">
             <button onClick={requestClose}>{t("common.cancel")}</button>
@@ -2530,34 +3820,8 @@ export function DirectorStage({
           </div>
           {(leftTab === "characters" || leftTab === "objects") && (
             <>
-              <div className="cw-stage-add">
-                {leftTab === "characters" ? (
-                  <button onClick={() => addObject("person")}>
-                    + {t(titles.person)}
-                  </button>
-                ) : (
-                  (
-                    [
-                      "box",
-                      "sphere",
-                      "cylinder",
-                      "cone",
-                      "pyramid",
-                      "torus",
-                      "plane",
-                      "capsule",
-                      "disk",
-                      "arc",
-                      "halfCylinder",
-                    ] as const
-                  ).map((kind) => (
-                    <button key={kind} onClick={() => addObject(kind)}>
-                      + {t(titles[kind])}
-                    </button>
-                  ))
-                )}
-              </div>
               <button
+                className="cw-stage-import-button"
                 onClick={() => {
                   setAssetRole(leftTab === "characters" ? "character" : "scene");
                   assetInput.current?.click();
@@ -2571,36 +3835,48 @@ export function DirectorStage({
                 </p>
               )}
               <div className="cw-stage-object-list cw-stage-object-grid">
-                {stage.objects
-                  .filter((item) =>
-                    leftTab === "characters"
-                      ? item.kind === "person" ||
-                        (item.kind === "gltf" && item.role === "character")
-                      : item.kind !== "person" &&
-                        !(item.kind === "gltf" && item.role === "character"),
-                  )
+                {placementCards
                   .filter((item) =>
                     item.name.toLocaleLowerCase().includes(
                       assetQuery.trim().toLocaleLowerCase(),
                     ),
                   )
-                  .map((item) => (
-                    <button
-                      key={item.id}
-                      aria-pressed={selected === item.id}
-                      onClick={() => setSelected(item.id)}
-                    >
-                      <StageObjectPreview object={item} />
-                      <span className="cw-stage-object-card-name">
-                        <span
-                          className="cw-stage-object-color"
-                          style={{ background: item.color }}
-                        />
-                        {item.name}
-                      </span>
-                    </button>
-                  ))}
+                  .map((item) => {
+                    const sourceObjectId = stage.objects.some(
+                      (candidate) => candidate.id === item.id,
+                    )
+                      ? item.id
+                      : null;
+                    const armed =
+                      pendingKind === item.kind &&
+                      pendingPlacementSourceId === sourceObjectId;
+                    return (
+                      <button
+                        key={`${item.id}:placement`}
+                        data-stage-placement-kind={item.kind}
+                        aria-pressed={armed}
+                        onClick={() =>
+                          setPendingKind(
+                            armed ? null : item.kind,
+                            armed ? null : sourceObjectId,
+                          )
+                        }
+                      >
+                        <StageObjectPreview object={item} />
+                        <span className="cw-stage-object-card-name">
+                          <span
+                            className="cw-stage-object-color"
+                            style={{ background: item.color }}
+                          />
+                          {item.name}
+                        </span>
+                      </button>
+                    );
+                  })}
               </div>
+              <p className="cw-domain-note" role="status">
+                {t("editors.stage.ui.assetPlacementHint")}
+              </p>
             </>
           )}
           {leftTab === "cameras" && (
@@ -2626,8 +3902,7 @@ export function DirectorStage({
                         name: rig.name,
                       })}
                       onClick={() => {
-                        setSplitCameraId(rig.id);
-                        setSplitView(true);
+                        setView({ type: "openSplit", cameraId: rig.id });
                       }}
                     >
                       ↗
@@ -2654,6 +3929,20 @@ export function DirectorStage({
           {leftTab === "background" && (
             <>
               <label className="cw-domain-field">
+                {t("editors.stage.ui.environmentPreset")}
+                <select
+                  aria-label={t("editors.stage.ui.environmentPreset")}
+                  value={stage.environment.preset}
+                  onChange={(event) => applyEnvironmentPreset(event.target.value as (typeof STAGE_ENVIRONMENT_PRESETS)[number]["preset"])}
+                >
+                  {STAGE_ENVIRONMENT_PRESETS.map((preset) => (
+                    <option key={preset.preset} value={preset.preset}>
+                      {t(`editors.stage.ui.environmentPreset.${preset.preset}` as never)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="cw-domain-field">
                 {t("editors.stage.ui.background")}
                 <input
                   type="color"
@@ -2666,6 +3955,179 @@ export function DirectorStage({
                   }
                 />
               </label>
+              <label className="cw-domain-field">
+                {t("editors.stage.ui.backgroundAsset")}
+                <select
+                  aria-label={t("editors.stage.ui.backgroundAsset")}
+                  value={stage.environment.backgroundAsset?.assetId ?? ""}
+                  onChange={(event) => {
+                    const selected = backgroundAssets?.find((asset) => asset.id === event.target.value);
+                    edit((current) => ({
+                      ...current,
+                      environment: {
+                        ...current.environment,
+                        backgroundAsset: selected ? assetReference(selected) : null,
+                      },
+                    }));
+                  }}
+                >
+                  <option value="">{t("editors.stage.ui.backgroundAssetFallback")}</option>
+                  {(backgroundAssets ?? []).map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="cw-domain-field">
+                {t("editors.stage.ui.groundColor")}
+                <input
+                  aria-label={t("editors.stage.ui.groundColor")}
+                  type="color"
+                  value={stage.environment.groundColor}
+                  onChange={(event) =>
+                    edit((current) => ({
+                      ...current,
+                      environment: {
+                        ...current.environment,
+                        groundColor: event.target.value,
+                      },
+                    }))
+                  }
+                />
+              </label>
+              <label className="cw-domain-checkbox">
+                <input
+                  aria-label={t("editors.stage.ui.groundVisible")}
+                  type="checkbox"
+                  checked={stage.environment.groundVisible}
+                  onChange={(event) =>
+                    edit((current) => ({
+                      ...current,
+                      environment: {
+                        ...current.environment,
+                        groundVisible: event.target.checked,
+                      },
+                    }))
+                  }
+                />
+                {t("editors.stage.ui.groundVisible")}
+              </label>
+              <label className="cw-domain-field">
+                {t("editors.stage.ui.exposure")}
+                <input
+                  aria-label={t("editors.stage.ui.exposure")}
+                  type="number"
+                  min="0"
+                  max="4"
+                  step="0.1"
+                  value={stage.environment.exposure}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value) && value >= 0 && value <= 4)
+                      edit((current) => ({
+                        ...current,
+                        environment: { ...current.environment, exposure: value },
+                      }));
+                  }}
+                />
+              </label>
+              <h4>{t("editors.stage.ui.lights")}</h4>
+              {stage.lights.map((light) => {
+                const roleLabel = t(
+                  `editors.stage.ui.light.${light.id}` as never,
+                );
+                const updateLight = (
+                  patch: Partial<typeof light>,
+                ) =>
+                  edit((current) => ({
+                    ...current,
+                    lights: current.lights.map((candidate) =>
+                      candidate.id === light.id
+                        ? { ...candidate, ...patch }
+                        : candidate,
+                    ),
+                  }));
+                const updateLightPosition = (
+                  axis: keyof Vector3Value,
+                  value: number,
+                ) =>
+                  updateLight({
+                    position: { ...light.position, [axis]: value },
+                  });
+                return (
+                  <fieldset className="cw-domain-field" key={light.id}>
+                    <legend>{roleLabel}</legend>
+                    <label>
+                      {t("editors.stage.ui.lightColor", { role: roleLabel })}
+                      <input
+                        aria-label={t("editors.stage.ui.lightColor", {
+                          role: roleLabel,
+                        })}
+                        type="color"
+                        value={light.color}
+                        onChange={(event) =>
+                          updateLight({ color: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      {t("editors.stage.ui.lightIntensity", {
+                        role: roleLabel,
+                      })}
+                      <input
+                        aria-label={t("editors.stage.ui.lightIntensity", {
+                          role: roleLabel,
+                        })}
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={light.intensity}
+                        onChange={(event) => {
+                          const value = Number(event.target.value);
+                          if (Number.isFinite(value) && value >= 0)
+                            updateLight({ intensity: value });
+                        }}
+                      />
+                    </label>
+                    <span>{t("editors.stage.ui.lightPosition", { role: roleLabel })}</span>
+                    <div>
+                      {(["x", "y", "z"] as const).map((axis) => (
+                        <label key={axis}>
+                          {axis.toUpperCase()}
+                          <input
+                            aria-label={t("editors.stage.ui.lightPositionAxis", {
+                              role: roleLabel,
+                              axis: axis.toUpperCase(),
+                            })}
+                            type="number"
+                            step="0.1"
+                            value={light.position[axis]}
+                            onChange={(event) => {
+                              const value = Number(event.target.value);
+                              if (Number.isFinite(value))
+                                updateLightPosition(axis, value);
+                            }}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <label className="cw-domain-checkbox">
+                      <input
+                        aria-label={t("editors.stage.ui.lightCastShadow", {
+                          role: roleLabel,
+                        })}
+                        type="checkbox"
+                        checked={light.castShadow}
+                        onChange={(event) =>
+                          updateLight({ castShadow: event.target.checked })
+                        }
+                      />
+                      {t("editors.stage.ui.lightCastShadow", {
+                        role: roleLabel,
+                      })}
+                    </label>
+                  </fieldset>
+                );
+              })}
               <label className="cw-domain-checkbox">
                 <input
                   type="checkbox"
@@ -2682,19 +4144,26 @@ export function DirectorStage({
               <p className="cw-domain-note">
                 {t("editors.stage.ui.orbitHint")}
                 <br />
+                {t("editors.stage.ui.shortcutHint")}
+                <br />
                 {t("editors.stage.ui.selectHint")}
               </p>
             </>
           )}
-            </aside>
-            <aside className="cw-stage-right">
-              <h3>
-                {object
-                  ? t("editors.stage.ui.transform")
-                  : t("editors.stage.ui.camera")}
-              </h3>
+        </aside>
+        <aside className="cw-stage-right">
+              {sceneTree}
+              <section className="cw-stage-inspector">
+                <header className="cw-stage-panel-heading">
+                  <span className="cw-stage-panel-icon" aria-hidden="true">
+                    ☷
+                  </span>
+                  <h3>{t("editors.stage.ui.properties")}</h3>
+                </header>
+                <div className="cw-stage-inspector-scroll">
               {object && (
-                <>
+                <section className="cw-stage-inspector-section">
+                  <h4>{t("editors.stage.ui.transform")}</h4>
                   <label className="cw-domain-field">
                     {t("editors.stage.ui.name")}
                     <input
@@ -2737,7 +4206,7 @@ export function DirectorStage({
                       object.role === "character" &&
                       object.hasAnimation)) && (
                     <section className="cw-stage-clips">
-                      <h3>{t("editors.stage.ui.motionClips")}</h3>
+                      <h4>{t("editors.stage.ui.motionClips")}</h4>
                       <button onClick={addMotionClip}>
                         {t("editors.stage.ui.addMotion")}
                       </button>
@@ -2898,15 +4367,16 @@ export function DirectorStage({
                   <button onClick={removeObject}>
                     {t("editors.stage.ui.deleteObject")}
                   </button>
-                </>
+                </section>
               )}
-              <h3>
+              <section className="cw-stage-inspector-section">
+              <h4>
                 {t("editors.stage.ui.cameraLabel")}{" "}
                 {
                   stage.cameras.find((camera) => camera.id === sampled.cameraId)
                     ?.name
                 }
-              </h3>
+              </h4>
               <label className="cw-domain-field">
                 {t("editors.stage.ui.editCamera")}
                 <select
@@ -3049,6 +4519,9 @@ export function DirectorStage({
               >
                 {t("editors.stage.ui.resetCamera")}
               </button>
+              </section>
+            </div>
+          </section>
         </aside>
         {previewMode === "dynamic" && (
           <footer className="cw-stage-bottom">
@@ -3056,6 +4529,7 @@ export function DirectorStage({
             <button
               disabled={!ready}
               onClick={() => {
+                setView({ type: "setPreviewMode", mode: "dynamic" });
                 if (time >= stage.duration) setTime(0);
                 setPlaying((current) => !current);
               }}
@@ -3094,13 +4568,173 @@ export function DirectorStage({
             aria-label={t("editors.stage.ui.playheadAria")}
             min={0}
             max={stage.duration}
-            step={0.01}
+            step={1 / stage.fps}
             value={Math.min(time, stage.duration)}
             onChange={(event) => {
-              setPlaying(false);
-              setTime(Number(event.target.value));
+              setPlayhead(Number(event.target.value));
             }}
           />
+          <section
+            className="cw-stage-track-surface"
+            aria-label={t("editors.stage.ui.timelineAria")}
+            data-testid="director-stage-timeline"
+            onClick={(event) => {
+              if (event.target !== event.currentTarget) return;
+              const bounds = event.currentTarget.getBoundingClientRect();
+              setPlayhead(
+                ((event.clientX - bounds.left) / Math.max(bounds.width, 1)) *
+                  timeline.duration,
+              );
+            }}
+          >
+            <div className="cw-stage-track-ruler" aria-hidden="true">
+              <span>{t("editors.stage.ui.timelineTime", { time: "0.0" })}</span>
+              <span>
+                {t("editors.stage.ui.timelineTime", {
+                  time: timeline.duration.toFixed(1),
+                })}
+              </span>
+            </div>
+            {timeline.tracks.map((track) => {
+              const boundaries = track.points.filter(
+                (point) => point.kind === "boundary",
+              );
+              return (
+                <div className="cw-stage-track-row" key={track.id}>
+                  <span className="cw-stage-track-label">
+                    {timelineTrackLabel(track)}
+                  </span>
+                  <div
+                    className="cw-stage-track-lane"
+                    role="presentation"
+                    onClick={(event) => {
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      setPlayhead(
+                        ((event.clientX - bounds.left) /
+                          Math.max(bounds.width, 1)) *
+                          timeline.duration,
+                      );
+                    }}
+                  >
+                    {boundaries.length > 1 &&
+                      Array.from({ length: Math.floor(boundaries.length / 2) }).map(
+                        (_, index) => {
+                          const start = boundaries[index * 2]!.time;
+                          const end = boundaries[index * 2 + 1]!.time;
+                          return (
+                            <span
+                              className="cw-stage-track-interval"
+                              key={`${track.id}:interval:${start}`}
+                              style={{
+                                left: `${(start / timelineDuration) * 100}%`,
+                                width: `${((end - start) / timelineDuration) * 100}%`,
+                              }}
+                              aria-hidden="true"
+                            />
+                          );
+                        },
+                      )}
+                    {track.points.map((point) => (
+                      <button
+                        className={`cw-stage-track-point is-${point.kind}`}
+                        key={point.id}
+                        type="button"
+                        style={{ left: `${(point.time / timelineDuration) * 100}%` }}
+                        aria-label={t("editors.stage.ui.timelinePointAria", {
+                          label: timelineTrackLabel(track),
+                          time: point.time.toFixed(2),
+                        })}
+                        aria-pressed={selectedTimelinePoint?.trackId === track.id && selectedTimelinePoint?.pointId === point.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedTimelinePoint({ trackId: track.id, pointId: point.id });
+                          setPlayhead(point.time);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <span
+              className="cw-stage-track-playhead"
+              style={{ left: `${(time / Math.max(timeline.duration, 0.001)) * 100}%` }}
+              aria-hidden="true"
+            />
+          </section>
+          <output className="cw-stage-active-state" data-testid="director-stage-active-state">
+            {activeStateText}
+          </output>
+          {selectedTimelineTrack && selectedTimelineValue?.kind === "keyframe" &&
+            selectedTimelineTrack.sourceId && selectedTimelineTrack.channel && (
+            <form
+              className="cw-stage-keyframe-editor"
+              key={selectedTimelineValue.id}
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                const vector = isVector(selectedTimelineValue.value)
+                  ? {
+                      x: Number(form.get("x")),
+                      y: Number(form.get("y")),
+                      z: Number(form.get("z")),
+                    }
+                  : Number(form.get("value"));
+                const track = selectedTimelineTrack;
+                edit((current) => {
+                  if (track.kind === "camera-channel") {
+                    return editStageCameraChannelAt(
+                      current,
+                      track.sourceId!,
+                      track.channel as keyof StageCameraChannels,
+                      selectedTimelineValue.time,
+                      vector,
+                    );
+                  }
+                  if (
+                    track.channel !== "position" &&
+                    track.channel !== "rotation" &&
+                    track.channel !== "scale"
+                  ) return current;
+                  return editStageObjectTransformChannelAt(
+                    current,
+                    track.sourceId!,
+                    track.channel,
+                    selectedTimelineValue.time,
+                    vector as Vector3Value,
+                  );
+                });
+              }}
+            >
+              <span>{timelineTrackLabel(selectedTimelineTrack)} · {selectedTimelineValue.time.toFixed(2)}s</span>
+              {selectedTimelineVector ? (
+                (["x", "y", "z"] as const).map((axis) => (
+                  <label key={axis}>
+                    {axis}
+                    <input name={axis} type="number" step="0.01" defaultValue={selectedTimelineVector[axis]} />
+                  </label>
+                ))
+              ) : (
+                <label>
+                  {t("editors.stage.ui.keyframeValue")}
+                  <input name="value" type="number" step="0.01" defaultValue={String(selectedTimelineValue.value ?? "")} />
+                </label>
+              )}
+              <button type="submit">{t("editors.stage.ui.editKeyframe")}</button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target: StageTimelineKeyframeTarget = selectedTimelineTrack.kind === "camera-channel"
+                    ? { kind: "camera", sourceId: selectedTimelineTrack.sourceId!, channel: selectedTimelineTrack.channel as keyof StageCameraChannels, pointId: selectedTimelineValue.id }
+                    : { kind: "object", sourceId: selectedTimelineTrack.sourceId!, channel: selectedTimelineTrack.channel as "position" | "rotation" | "scale", pointId: selectedTimelineValue.id };
+                  edit((current) => removeStageTimelineKeyframe(current, target));
+                  setSelectedTimelinePoint(null);
+                }}
+              >
+                {t("editors.stage.ui.deleteSelectedKeyframe")}
+              </button>
+            </form>
+          )}
           <div className="cw-stage-keyframes">
             {frameTimes.map((frame) => (
               <div key={frame}>
@@ -3302,7 +4936,7 @@ export function DirectorStage({
                 // close (or guard-close) the whole stage editor.
                 event.stopPropagation();
                 event.preventDefault();
-                setExportOpen(false);
+                setView({ type: "closeExport" });
               }
             }}
           >
@@ -3310,7 +4944,7 @@ export function DirectorStage({
               className="cw-stage-export"
               onSubmit={(event) => {
                 event.preventDefault();
-                setExportOpen(false);
+                setView({ type: "closeExport" });
                 void renderVideo(exportSource, exportClarity, exportFps);
               }}
             >
@@ -3319,7 +4953,7 @@ export function DirectorStage({
                 <button
                   type="button"
                   aria-label={t("editors.stage.ui.exportCancel")}
-                  onClick={() => setExportOpen(false)}
+                  onClick={() => setView({ type: "closeExport" })}
                 >
                   ×
                 </button>
@@ -3410,7 +5044,10 @@ export function DirectorStage({
                 {t("editors.stage.ui.exportNoteClean")}
               </p>
               <footer className="cw-stage-export-actions">
-                <button type="button" onClick={() => setExportOpen(false)}>
+                <button
+                  type="button"
+                  onClick={() => setView({ type: "closeExport" })}
+                >
                   {t("editors.stage.ui.exportCancel")}
                 </button>
                 <button

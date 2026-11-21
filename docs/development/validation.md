@@ -251,6 +251,8 @@ CREATION_WEB_URL=http://127.0.0.1:5179 CREATION_API_URL=http://127.0.0.1:8019 \
 node scripts/verify_creation_browser.mjs       # UI/API 主流程与重载
 node tests/browser/director_stage_entry.mjs     # 导演台创建、GLB 导入、关键帧、撤销、重做与重开（默认 en-US）
 DIRECTOR_STAGE_LOCALE=zh-CN node tests/browser/director_stage_entry.mjs  # 同一导演台与 GLB 流程走中文界面
+node tests/browser/director_stage_gizmo.mjs     # 预览窗口内拖动操作轴摆位，不写关键帧，单次撤销还原
+DIRECTOR_STAGE_LOCALE=zh-CN node tests/browser/director_stage_gizmo.mjs  # 同一摆位流程走中文界面
 node tests/browser/director_stage_animation.mjs # 动画 GLB 导入、播放头采样与 MP4 同源合成
 node tests/browser/director_stage_output.mjs   # 定格与 MP4 登记为工程资产并被时间线引用
 CREATION_DEVICE_SCALE_FACTOR=2 node tests/browser/director_stage_output.mjs  # 同一流程在高 DPI 下复验定格尺寸

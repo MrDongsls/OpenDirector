@@ -14,8 +14,16 @@ const L = {
     apply: "Apply edits",
     cameraName: "Camera name",
     playhead: "Stage playhead",
+    timeline: "Director Stage timeline tracks",
+    previewMode: "Preview mode",
+    staticPreview: "Static",
+    dynamicPreview: "Dynamic",
+    addShot: "Add current camera at playhead",
     positionX: "Position X",
     recordKeyframe: "Record a keyframe here",
+    activeState: "At playhead:",
+    editKeyframe: "Edit selected keyframe",
+    deleteSelectedKeyframe: "Delete selected keyframe",
     closeEditor: "Close editor",
     undo: "Undo",
     redo: "Redo",
@@ -23,8 +31,14 @@ const L = {
     importAsset: "Import GLB / GLTF",
     importJson: "Import stage JSON",
     exportJson: "Export stage JSON",
-    noAnimationNote:
-      "This character has no animation data; it still follows camera, storyboard, and transform keyframes.",
+    background: "Background",
+    backgroundAsset: "Background image",
+    environmentPreset: "Environment preset",
+    groundColor: "Ground color",
+    groundVisible: "Show ground",
+    exposure: "Exposure",
+    keyIntensity: "Key light intensity",
+    noAnimationNote: "Character · Imported acceptance · no animation data",
     corruptAssetNotice:
       "Could not read “broken.glb”: the GLB header is valid but the embedded JSON is missing or corrupt.",
     loadFailedNotice:
@@ -42,8 +56,16 @@ const L = {
     apply: "应用编辑",
     cameraName: "机位名称",
     playhead: "舞台播放位置",
+    timeline: "导演舞台时间线轨道",
+    previewMode: "预览模式",
+    staticPreview: "静态",
+    dynamicPreview: "动态",
+    addShot: "在播放头添加当前机位",
     positionX: "位置 X",
     recordKeyframe: "在此记录关键帧",
+    activeState: "播放头状态：",
+    editKeyframe: "编辑所选关键帧",
+    deleteSelectedKeyframe: "删除所选关键帧",
     closeEditor: "关闭编辑器",
     undo: "撤销",
     redo: "重做",
@@ -51,7 +73,14 @@ const L = {
     importAsset: "导入 GLB / GLTF",
     importJson: "导入舞台 JSON",
     exportJson: "导出舞台 JSON",
-    noAnimationNote: "此人物没有动画数据，但仍会跟随摄像机、分镜和变换关键帧。",
+    background: "背景",
+    backgroundAsset: "背景图片",
+    environmentPreset: "环境预设",
+    groundColor: "地面颜色",
+    groundVisible: "显示地面",
+    exposure: "曝光",
+    keyIntensity: "主光强度",
+    noAnimationNote: "人物 · 已导入 acceptance · 无动画数据",
     corruptAssetNotice:
       "无法读取「broken.glb」：GLB 头有效，但内嵌 JSON 缺失或已损坏。",
     loadFailedNotice:
@@ -106,9 +135,10 @@ const page = await browser.newPage({
   locale,
   viewport: { width: 1700, height: 1100 },
 });
-await page.addInitScript(() =>
-  localStorage.setItem("opendirector.modelSetup.v1", "dismissed"),
-);
+await page.addInitScript((value) => {
+  localStorage.setItem("opendirector.modelSetup.v1", "dismissed");
+  localStorage.setItem("opendirector.locale.v1", value);
+}, locale);
 page.setDefaultTimeout(20000);
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
@@ -228,6 +258,47 @@ try {
   const objectId = createdRefs.document.data.objects[0].id;
   assert.equal(keyframeCount(createdRefs.document), 0);
 
+  // Environment controls edit the persisted document through the same local
+  // history/apply path as camera and object edits.
+  await page.getByRole("tab", { name: L.background, exact: true }).click();
+  assert.equal(await page.getByLabel(L.backgroundAsset, { exact: true }).inputValue(), "");
+  await page.getByLabel(L.environmentPreset, { exact: true }).selectOption("moonlit");
+  assert.equal(await page.getByLabel(L.environmentPreset, { exact: true }).inputValue(), "moonlit");
+  assert.equal(await page.getByLabel(L.exposure, { exact: true }).inputValue(), "0.8");
+  assert.equal(await page.getByLabel(L.keyIntensity, { exact: true }).inputValue(), "2.4");
+  await page.getByLabel(L.groundColor, { exact: true }).fill("#405060");
+  await page.getByLabel(L.groundVisible, { exact: true }).uncheck();
+  await page.getByLabel(L.exposure, { exact: true }).fill("2.25");
+  await page.getByLabel(L.keyIntensity, { exact: true }).fill("4.2");
+  await page.getByRole("button", { name: L.apply, exact: true }).click();
+  const environmentCommitted = await until((snapshot) => {
+    const result = director(snapshot, itemId);
+    return (
+      result.document?.data.environment?.groundColor === "#405060" &&
+      result.document.data.environment.groundVisible === false &&
+      result.document.data.environment.preset === "moonlit" &&
+      result.document.data.environment.exposure === 2.25 &&
+      result.document.data.lights.find((light) => light.id === "key")?.intensity === 4.2
+    );
+  }, "persisted ground and key light edits");
+  const savedEnvironment = director(environmentCommitted, itemId).document.data;
+  assert.equal(savedEnvironment.environment.groundColor, "#405060");
+  assert.equal(savedEnvironment.environment.groundVisible, false);
+  assert.equal(savedEnvironment.environment.exposure, 2.25);
+  assert.equal(savedEnvironment.environment.preset, "moonlit");
+  assert.equal(savedEnvironment.environment.backgroundAsset, null);
+  assert.equal(savedEnvironment.lights.find((light) => light.id === "key").intensity, 4.2);
+
+  await page.locator(`.react-flow__node[data-id="${itemId}"]`).click();
+  await page.getByRole("button", { name: L.openStage, exact: true }).click();
+  await page.getByRole("button", { name: L.apply, exact: true }).waitFor();
+  await page.getByRole("tab", { name: L.background, exact: true }).click();
+  assert.equal(await page.getByLabel(L.groundColor, { exact: true }).inputValue(), "#405060");
+  assert.equal(await page.getByLabel(L.groundVisible, { exact: true }).isChecked(), false);
+  assert.equal(await page.getByLabel(L.exposure, { exact: true }).inputValue(), "2.25");
+  assert.equal(await page.getByLabel(L.backgroundAsset, { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel(L.keyIntensity, { exact: true }).inputValue(), "4.2");
+
   // Corrupt GLB JSON, plain non-GLB bytes, external GLTF, and GLB with
   // external references are rejected with localized notices before anything
   // reaches the project.
@@ -276,6 +347,7 @@ try {
       buffer: makeGlb(),
     });
   await page
+    .locator(".cw-stage-right-tree")
     .getByRole("button", { name: "acceptance", exact: true })
     .waitFor();
   await page.getByText(L.noAnimationNote, { exact: true }).waitFor();
@@ -301,10 +373,47 @@ try {
     .getByText(L.importForeignAssetsNotice, { exact: true })
     .waitFor();
   await page
+    .locator(".cw-stage-right-tree")
     .getByRole("button", { name: "acceptance", exact: true })
     .waitFor();
 
+  const previewMode = page.getByRole("group", { name: L.previewMode, exact: true });
+  await previewMode.getByRole("button", { name: L.staticPreview, exact: true }).waitFor();
+  assert.equal(
+    await previewMode.getByRole("button", { name: L.staticPreview, exact: true }).getAttribute("aria-pressed"),
+    "true",
+  );
+  const timeline = page.getByTestId("director-stage-timeline");
+  assert.equal(await timeline.count(), 0);
+  await previewMode.getByRole("button", { name: L.dynamicPreview, exact: true }).click();
+  await timeline.waitFor();
+  assert.equal(await timeline.getAttribute("aria-label"), L.timeline);
+
   await page.getByLabel(L.cameraName, { exact: true }).fill("Acceptance camera");
+  await page
+    .getByRole("slider", { name: L.playhead, exact: true })
+    .press("Home");
+  await page.getByRole("button", { name: L.addShot, exact: true }).click();
+  await page.getByRole("slider", { name: L.playhead, exact: true }).fill("1");
+  const heldTime = await page.getByRole("slider", { name: L.playhead, exact: true }).inputValue();
+  await previewMode.getByRole("button", { name: L.dynamicPreview, exact: true }).click();
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(
+    await page.getByRole("slider", { name: L.playhead, exact: true }).inputValue(),
+    heldTime,
+    "switching to dynamic mode must not start playback",
+  );
+  await previewMode.getByRole("button", { name: L.staticPreview, exact: true }).click();
+  assert.equal(await timeline.count(), 0);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await timeline.count(), 0);
+  await previewMode.getByRole("button", { name: L.dynamicPreview, exact: true }).click();
+  await timeline.waitFor();
+  await timeline.getByRole("button", { name: /Shots.*0\.00 seconds|分镜.*0\.00 秒/ }).click();
+  assert.equal(
+    await page.getByRole("slider", { name: L.playhead, exact: true }).inputValue(),
+    "0",
+  );
   await page
     .getByRole("slider", { name: L.playhead, exact: true })
     .press("End");
@@ -313,6 +422,17 @@ try {
     .getByRole("button", { name: L.recordKeyframe, exact: true })
     .click();
   await page.getByRole("button", { name: "6.00s", exact: true }).waitFor();
+  await page.getByTestId("director-stage-active-state").getByText(L.activeState, { exact: false }).waitFor();
+  const positionPoint = timeline.getByRole("button", {
+    name: /Acceptance camera.*Position.*6\.00 seconds|Acceptance camera.*位置.*6\.00 秒/,
+  });
+  await positionPoint.click();
+  const keyframeEditor = page.locator(".cw-stage-keyframe-editor");
+  await keyframeEditor.waitFor();
+  await keyframeEditor.locator('input[name="x"]').fill("9");
+  await keyframeEditor.getByRole("button", { name: L.editKeyframe, exact: true }).click();
+  await positionPoint.click();
+  await keyframeEditor.getByRole("button", { name: L.deleteSelectedKeyframe, exact: true }).click();
   await page.getByRole("button", { name: L.apply, exact: true }).click();
 
   const committed = await until((snapshot) => {
@@ -321,7 +441,9 @@ try {
       result.item?.id === itemId &&
       result.document?.id === documentId &&
       result.document.data.cameras[0].name === "Acceptance camera" &&
-      keyframeCount(result.document) >= 2
+      keyframeCount(result.document) >= 2 &&
+      result.document.data.cameras[0].channels.position.every((frame) => frame.time !== 6) &&
+      result.document.data.cameras[0].channels.target.some((frame) => frame.time === 6)
     );
   }, "edited director document with keyframes");
   const committedRefs = director(committed, itemId);
@@ -351,7 +473,9 @@ try {
 
   // Applying saves and closes the stage editor in one step.
   // The toolbar undo carries an aria-label; the stage modal's undo is plain text.
-  const undo = page.getByLabel(L.undo, { exact: true });
+  const undo = page
+    .locator(".cw-undo-controls")
+    .getByRole("button", { name: L.undo, exact: true });
   await undo.waitFor();
   assert.equal(await undo.isEnabled(), true);
   await undo.click();
@@ -406,8 +530,11 @@ try {
     "Acceptance camera",
   );
   await page
+    .locator(".cw-stage-left")
     .getByRole("button", { name: "acceptance", exact: true })
     .waitFor();
+  await previewMode.getByRole("button", { name: L.dynamicPreview, exact: true }).click();
+  await timeline.waitFor();
   await page.getByRole("button", { name: "6.00s", exact: true }).waitFor();
   assert.deepEqual(director(await state(), itemId).document, director(redone, itemId).document);
   await page
@@ -434,6 +561,7 @@ try {
         "stage JSON import rejects foreign pinned assets",
         "imported asset identity survives undo, redo, and reopen",
         "keyframes persist and reopen",
+        "timeline tracks are visible, localized, and locate the playhead",
         "undo preserves node and document identities",
         "redo restores the edited document and keyframes",
         "no page errors",

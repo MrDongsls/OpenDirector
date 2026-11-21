@@ -13,6 +13,7 @@ import {
   stageUploadTitle,
 } from "../src/backend/creationProjection.ts";
 import { CreationClient } from "../src/backend/creationClient.ts";
+import { createDocument, createNode } from "../src/canvas/model.ts";
 import type { ProjectSnapshot } from "../src/contracts/generated.ts";
 import type { AssetRef } from "../src/contracts/generated.ts";
 
@@ -407,6 +408,53 @@ test("director saves materialize object thumbnail captures as image assets", asy
   assert.deepEqual(write.imported, [
     { name: "Stage board-人物 1-thumbnail.png", kind: "image" },
   ]);
+});
+test("director projection emits director.apply for an existing Director Stage save", async () => {
+  const source = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/creation-project.json", import.meta.url),
+      "utf8",
+    ),
+  ) as ProjectSnapshot;
+  const client = new CreationClient(source.project.id);
+  const projection = new CreationProjection(client);
+  const item = source.canvasItems.find((candidate) => candidate.kind === "external")!;
+  const node = createNode("external");
+  node.id = String(item.id);
+  node.data.title = item.title;
+  node.data.localStage = createLocalStage();
+  const document = await (projection as unknown as {
+    editorInput: (node: unknown, kind: "director") => Promise<unknown>;
+  }).editorInput(node, "director");
+  const basis = {
+    ...source,
+    canvasItems: [{ ...item, binding: { role: "editor", objectRef: {
+      objectType: "editor_document", id: (document as { id: string }).id, kind: "director",
+    } } }],
+    editorDocuments: [document],
+  } as ProjectSnapshot;
+  client.install(basis);
+  const baseline = createDocument("Director Stage");
+  baseline.id = source.project.id;
+  baseline.nodes = [node];
+  const next = structuredClone(baseline);
+  const nextNode = next.nodes[0]!;
+  const stage = nextNode.data.localStage as { cameras: { name: string }[] };
+  stage.cameras[0]!.name = "Shared command stage";
+  projection.baseline = baseline;
+  projection.basis = basis;
+  const plan = await projection.prepare(next);
+  assert.ok(
+    plan.operations.some(
+      (operation) =>
+        operation.type === "director.apply" &&
+        operation.payload.document.kind === "director",
+    ),
+  );
+  assert.equal(
+    plan.operations.some((operation) => operation.type === "editor.save"),
+    false,
+  );
 });
 test("director saves register unsaved model bytes and captured stills as project assets", async () => {
   const stage = parseLocalStageValue({

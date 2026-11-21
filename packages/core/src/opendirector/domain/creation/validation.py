@@ -99,7 +99,9 @@ def validate_command(command: Command, project: ProjectSnapshot):
     if command.type == 'reference.update':
         if get('reference', payload.reference.id).targetSpecId != payload.reference.targetSpecId:
             raise ContractError('invalid_input', 'A reference cannot be moved to another generation spec', payload.reference.id)
-    if command.type == 'editor.save':
+    if command.type in {'editor.save', 'director.apply'}:
         current = get('editor_document', payload.document.id)
         if current.kind != payload.document.kind:
             raise ContractError('invalid_input', 'Editor document kind cannot change', current.id)
+        if command.type == 'director.apply' and current.kind != 'director':
+            raise ContractError('role_restricted', 'director.apply 只能保存 Director Stage 文档。 director.apply only accepts Director Stage documents.', current.id)

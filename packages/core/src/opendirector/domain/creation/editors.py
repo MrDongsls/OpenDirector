@@ -1,5 +1,6 @@
 """Typed retained editors. AssetRef replaces transient src/data/blob URLs."""
 from math import ceil, floor, isfinite
+import re
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -381,6 +382,9 @@ class StageObject(StageTransform):
     kind: Literal['person', 'box', 'sphere', 'gltf', 'cylinder', 'cone', 'pyramid', 'torus', 'plane', 'capsule', 'disk', 'arc', 'halfCylinder'] = Field(description='Business object or media type.')
     name: str = Field(max_length=255, description='User-visible name.')
     color: Color = Field(description='Serialized display color.')
+    visible: StrictBool = Field(default=True, description='Whether this object is displayed.')
+    locked: StrictBool = Field(default=False, description='Whether edits to this object are blocked.')
+    opacity: Unit = Field(default=1, description='Layer opacity from zero to one.')
     keyframes: tuple[TransformFrame, ...] = Field(default=(), description='Ordered animation keyframes.')
     motionClips: tuple[MotionClip, ...] = Field(default=(), description='Ordered procedural motion intervals.')
     asset: AssetRef | None = Field(default=None, description='Registered GLB or self-contained GLTF asset for an imported stage object.')
@@ -444,11 +448,56 @@ class CameraFrame(Contract):
     value: StageCamera = Field(description='Keyframed transform or camera pose.')
 
 
+class CameraVectorFrame(Contract):
+    id: Identifier = Field(description='Stable channel keyframe ID.')
+    time: NonNegative = Field(description='Keyframe time in seconds.')
+    value: Vector3 = Field(description='Keyframed camera vector.')
+
+
+class CameraNumberFrame(Contract):
+    id: Identifier = Field(description='Stable channel keyframe ID.')
+    time: NonNegative = Field(description='Keyframe time in seconds.')
+    value: Annotated[float, Field(strict=True, gt=0)] = Field(description='Keyframed camera focal length.')
+
+
+class CameraChannels(Contract):
+    position: tuple[CameraVectorFrame, ...] = Field(default=(), description='Independent camera position channel.')
+    target: tuple[CameraVectorFrame, ...] = Field(default=(), description='Independent camera target channel.')
+    up: tuple[CameraVectorFrame, ...] = Field(default=(), description='Independent camera up-vector channel.')
+    focalLength: tuple[CameraNumberFrame, ...] = Field(default=(), description='Independent camera focal-length channel.')
+
+
 class CameraRig(Contract):
     id: Identifier = Field(description='Stable object ID.')
     name: str = Field(max_length=255, description='User-visible name.')
+    aspectRatio: Literal['16:9', '2.39:1', '9:16', '1:1', '4:3', '3:4'] = Field(default='16:9', description='Camera output aspect ratio.')
     pose: StageCamera = Field(description='Camera position and look-at target.')
     keyframes: tuple[CameraFrame, ...] = Field(default=(), description='Ordered animation keyframes.')
+    channels: CameraChannels = Field(default_factory=CameraChannels, description='Independent authoritative camera channels.')
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_keyframes(cls, value):
+        if not isinstance(value, dict) or value.get('channels') is not None:
+            return value
+        frames = value.get('keyframes') or ()
+        if any(
+            not isinstance(frame, dict)
+            or not isinstance(frame.get('value'), dict)
+            or not {'id', 'time'} <= set(frame)
+            or not {'position', 'target', 'fov'} <= set(frame.get('value', {}))
+            for frame in frames
+        ):
+            return value
+        return {
+            **value,
+            'channels': {
+                'position': [dict(id=f['id'], time=f['time'], value=f['value']['position']) for f in frames],
+                'target': [dict(id=f['id'], time=f['time'], value=f['value']['target']) for f in frames],
+                'up': [dict(id=f['id'], time=f['time'], value={'x': 0, 'y': 1, 'z': 0}) for f in frames],
+                'focalLength': [dict(id=f['id'], time=f['time'], value=f['value']['fov']) for f in frames],
+            },
+        }
 
 
 class StageShot(Contract):
@@ -456,6 +505,87 @@ class StageShot(Contract):
     cameraId: Identifier = Field(description='Stage camera ID.')
     start: NonNegative = Field(description='Start time in seconds.')
     duration: Positive = Field(description='Interval duration in seconds.')
+
+
+class StageEnvironment(Contract):
+    """The named environment used by the retained Director scene."""
+    preset: Literal['studio', 'warm-sunset', 'moonlit'] = Field(default='studio', description='Environment preset reference. 环境预设引用。')
+    groundColor: Color = Field(default='#181818', description='Ground plane color. 地面颜色。')
+    groundVisible: StrictBool = Field(default=True, description='Whether the ground plane is visible. 是否显示地面。')
+    exposure: Annotated[float, Field(strict=True, ge=0, le=4)] = Field(default=1.0, description='Scene exposure from zero to four. 场景曝光范围为 0 到 4。')
+    backgroundAsset: AssetRef | None = Field(default=None, description='Optional registered image asset used as the stage background. 可选的已登记图片背景素材。')
+
+    @model_validator(mode='after')
+    def background_asset(self):
+        if self.backgroundAsset and self.backgroundAsset.kind != 'image':
+            raise ValueError('Stage background assets must be image assets. 舞台背景素材必须是图片素材。')
+        return self
+
+    @field_validator('preset', mode='before')
+    @classmethod
+    def environment_preset(cls, value):
+        if value not in {'studio', 'warm-sunset', 'moonlit'}:
+            raise ValueError('Environment preset must be studio, warm-sunset or moonlit. 环境预设必须是 studio、warm-sunset 或 moonlit。')
+        return value
+
+    @field_validator('exposure', mode='before')
+    @classmethod
+    def environment_exposure(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or not 0 <= value <= 4:
+            raise ValueError('Environment exposure must be between 0 and 4. 场景曝光必须在 0 到 4 之间。')
+        return value
+
+
+class StageLight(Contract):
+    id: Literal['hemisphere', 'key', 'fill'] = Field(description='Stable light role. 稳定灯光角色。')
+    color: Color = Field(description='Light color in #RRGGBB format. 灯光颜色。')
+    intensity: Annotated[float, Field(strict=True, ge=0, le=10)] = Field(description='Light intensity from zero to ten. 灯光强度范围为 0 到 10。')
+    position: Vector3 = Field(description='Light position in stage coordinates. 灯光在舞台坐标中的位置。')
+    castShadow: StrictBool = Field(default=False, description='Whether the light casts shadows. 是否投射阴影。')
+
+    @field_validator('id', mode='before')
+    @classmethod
+    def light_id(cls, value):
+        if value not in {'hemisphere', 'key', 'fill'}:
+            raise ValueError('Light role must be hemisphere, key or fill. 灯光角色必须是 hemisphere、key 或 fill。')
+        return value
+
+    @field_validator('color', mode='before')
+    @classmethod
+    def light_color(cls, value):
+        if not isinstance(value, str) or re.fullmatch(r'#[0-9a-fA-F]{6}', value) is None:
+            raise ValueError('Light color must use #RRGGBB. 灯光颜色必须使用 #RRGGBB 格式。')
+        return value
+
+    @field_validator('intensity', mode='before')
+    @classmethod
+    def light_intensity(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or not 0 <= value <= 10:
+            raise ValueError('Light intensity must be between 0 and 10. 灯光强度必须在 0 到 10 之间。')
+        return value
+
+    @field_validator('position', mode='before')
+    @classmethod
+    def light_position(cls, value):
+        if isinstance(value, Vector3):
+            return value
+        if not isinstance(value, dict) or any(not isinstance(value.get(axis), (int, float)) or isinstance(value.get(axis), bool) or not isfinite(value[axis]) for axis in ('x', 'y', 'z')):
+            raise ValueError('Light position must contain finite x, y and z values. 灯光位置必须包含有限的 x、y、z 数值。')
+        return value
+
+    @model_validator(mode='after')
+    def role_constraints(self):
+        if self.id == 'hemisphere' and self.castShadow:
+            raise ValueError('Hemisphere lights cannot cast shadows. 半球光不能投射阴影。')
+        return self
+
+
+def default_stage_lights() -> tuple[StageLight, ...]:
+    return (
+        StageLight(id='hemisphere', color='#ffffff', intensity=2.4, position=Vector3(x=0, y=1, z=0)),
+        StageLight(id='key', color='#ffffff', intensity=3.5, position=Vector3(x=5, y=10, z=6), castShadow=True),
+        StageLight(id='fill', color='#ffffff', intensity=1.6, position=Vector3(x=-6, y=5, z=-5)),
+    )
 
 
 def check_frames(frames, duration):
@@ -478,19 +608,32 @@ class DirectorData(Contract):
     background: Color = Field(description='Composition background color.')
     grid: bool = Field(default=True, description='Whether to display the stage grid.')
     duration: Positive = Field(description='Interval duration in seconds.')
+    fps: Literal[24, 25, 30, 50, 60] = Field(default=30, description='Frames per second. 帧率。')
     aspectRatio: Literal['16:9', '2.39:1', '9:16', '1:1', '4:3', '3:4'] = Field(default='16:9', description='Output width-to-height ratio.')
     cameras: tuple[CameraRig, ...] = Field(min_length=1, description='Editable stage cameras.')
     activeCameraId: Identifier = Field(description='Active stage camera ID.')
     cameraSource: Literal['camera', 'storyboard'] = Field(default='camera', description='Camera selection strategy.')
     shots: tuple[StageShot, ...] = Field(default=(), description='Ordered camera shot intervals.')
     objects: tuple[StageObject, ...] = Field(default=(), description='Editable stage objects.')
+    environment: StageEnvironment = Field(default_factory=StageEnvironment, description='Authoritative environment reference and ground configuration. 权威环境引用和地面配置。')
+    lights: tuple[StageLight, ...] = Field(default_factory=default_stage_lights, min_length=3, max_length=3, description='The three retained stage lights. 舞台保留的三盏灯光。')
     stills: tuple[AssetRef, ...] = Field(default=(), description='Captured still frames pinned as project image assets, oldest first.')
+
+    @field_validator('fps', mode='before')
+    @classmethod
+    def stage_fps(cls, value):
+        if isinstance(value, bool) or not isinstance(value, int) or value not in {24, 25, 30, 50, 60}:
+            raise ValueError('Stage FPS must be one of 24, 25, 30, 50 or 60. 舞台帧率必须是 24、25、30、50 或 60。')
+        return value
 
     @model_validator(mode='after')
     def stage_relations(self):
         camera_ids = [camera.id for camera in self.cameras]
         unique(camera_ids, 'camera IDs')
         unique([obj.id for obj in self.objects], 'stage object IDs')
+        light_ids = [light.id for light in self.lights]
+        if set(light_ids) != {'hemisphere', 'key', 'fill'}:
+            raise ValueError('Stage lights must contain exactly one hemisphere, key and fill light. 舞台灯光必须各包含一盏半球光、主光和辅光。')
         # One asset can back at most one drawer entry; the read path keys
         # drawer items by assetId.
         unique([still.assetId for still in self.stills], 'stage still asset IDs')
@@ -501,6 +644,8 @@ class DirectorData(Contract):
             raise ValueError('Local camera-shot playback needs shots')
         for camera in self.cameras:
             check_frames(camera.keyframes, self.duration)
+            for channel in (camera.channels.position, camera.channels.target, camera.channels.up, camera.channels.focalLength):
+                check_frames(channel, self.duration)
         for obj in self.objects:
             check_frames(obj.keyframes, self.duration)
             check_intervals(obj.motionClips, self.duration)

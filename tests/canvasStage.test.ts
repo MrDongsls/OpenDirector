@@ -8,12 +8,15 @@ import {
   sampleStage,
   sampleStageCamera,
   editStageObjectAt,
+  editStageObjectPlacement,
   editStageCameraAt,
   captureStageFrame,
   removeStageFrame,
   stageOutputSize,
   stageExportPlan,
+  STAGE_FPS,
   STAGE_RATIOS,
+  type StageCameraChannels,
 } from "../src/canvas/stageDocument.ts";
 import {
   sampleJointPose,
@@ -74,6 +77,7 @@ test("V1 migrates once to independent tracks without changing camera, object or 
     stage = parseLocalStageValue(raw),
     pose = sampleStage(stage, 3);
   assert.equal(stage.version, 2);
+  assert.equal(stage.fps, 30);
   assert.deepEqual(pose.objects[0]!.position, { x: 3, y: 3, z: 0 });
   assert.equal(pose.camera.position.x, 8);
   assert.equal(pose.objects[0]!.motion?.preset, "walk");
@@ -88,6 +92,153 @@ test("V1 migrates once to independent tracks without changing camera, object or 
   assert.equal(sameLocalStage(stage, parseLocalStageValue(raw)), false);
 });
 
+test("stage FPS defaults, round-trips, and participates in sameLocalStage without changing sampling", () => {
+  const stage = createLocalStage();
+  assert.deepEqual(STAGE_FPS, [24, 25, 30, 50, 60]);
+  assert.equal(stage.fps, 30);
+  const legacyV2 = JSON.parse(JSON.stringify(stage));
+  delete legacyV2.fps;
+  assert.equal(parseLocalStageValue(legacyV2).fps, 30);
+  const explicit = parseLocalStageValue({ ...stage, fps: 60 });
+  assert.equal(explicit.fps, 60);
+  assert.deepEqual(parseLocalStageValue(JSON.parse(JSON.stringify(explicit))), explicit);
+  assert.equal(sameLocalStage(stage, explicit), false);
+  assert.deepEqual(sampleStage(stage, 3), sampleStage(explicit, 3));
+});
+
+test("stage FPS parser rejects values outside the export contract", () => {
+  const stage = createLocalStage();
+  for (const fps of [0, 23, 29, 61, true, 24.5]) {
+    assert.throws(() => parseLocalStageValue({ ...stage, fps }), /无效|invalid/i);
+  }
+});
+
+test("object state defaults, migrates, round-trips, and locked objects stay unchanged", () => {
+  const stage = createLocalStage();
+  const legacy = JSON.parse(JSON.stringify(stage));
+  delete legacy.objects[0].visible;
+  delete legacy.objects[0].locked;
+  delete legacy.objects[0].opacity;
+  const migrated = parseLocalStageValue(legacy);
+  assert.equal(migrated.objects[0]!.visible, true);
+  assert.equal(migrated.objects[0]!.locked, false);
+  assert.equal(migrated.objects[0]!.opacity, 1);
+  const explicit = parseLocalStageValue({
+    ...stage,
+    objects: [{ ...stage.objects[0]!, visible: false, locked: true, opacity: 0.35 }],
+  });
+  assert.deepEqual(parseLocalStageValue(JSON.parse(JSON.stringify(explicit))), explicit);
+  assert.equal(sameLocalStage(stage, explicit), false);
+  assert.deepEqual(sampleStage(stage, 3).objects[0]!.position, sampleStage(explicit, 3).objects[0]!.position);
+  assert.deepEqual(editStageObjectAt(explicit, explicit.objects[0]!.id, 2, { name: "blocked" }), explicit);
+  assert.deepEqual(editStageObjectPlacement(explicit, explicit.objects[0]!.id, {
+    position: { x: 5, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+  }), explicit);
+  assert.deepEqual(
+    captureStageFrame(explicit, 2).objects[0]!.keyframes,
+    explicit.objects[0]!.keyframes,
+  );
+  for (const patch of [{ visible: 1 }, { locked: 0 }, { opacity: -0.1 }, { opacity: 1.1 }])
+    assert.throws(() => parseLocalStageValue({ ...stage, objects: [{ ...stage.objects[0]!, ...patch }] }), /无效|invalid/i);
+});
+test("environment and lights default, migrate, round-trip, and reject invalid configuration", () => {
+  const stage = createLocalStage();
+  assert.deepEqual(stage.environment, { preset: "studio", groundColor: "#181818", groundVisible: true, exposure: 1, backgroundAsset: null });
+  assert.deepEqual(stage.lights.map(({ id, intensity, position, castShadow }) => ({ id, intensity, position, castShadow })), [
+    { id: "hemisphere", intensity: 2.4, position: { x: 0, y: 1, z: 0 }, castShadow: false },
+    { id: "key", intensity: 3.5, position: { x: 5, y: 10, z: 6 }, castShadow: true },
+    { id: "fill", intensity: 1.6, position: { x: -6, y: 5, z: -5 }, castShadow: false },
+  ]);
+  const legacy = JSON.parse(JSON.stringify(stage));
+  delete legacy.environment;
+  delete legacy.lights;
+  const migrated = parseLocalStageValue(legacy);
+  assert.deepEqual(migrated.environment, stage.environment);
+  assert.deepEqual(migrated.lights, stage.lights);
+  const explicit = parseLocalStageValue({
+    ...stage,
+    environment: { preset: "studio", groundColor: "#202020", groundVisible: false, exposure: 2.25, backgroundAsset: null },
+    lights: stage.lights.map((light) => light.id === "key" ? { ...light, intensity: 4.2 } : light),
+  });
+  assert.deepEqual(parseLocalStageValue(JSON.parse(JSON.stringify(explicit))), explicit);
+  const oldEnvironment = { ...explicit, environment: { preset: "studio", groundColor: "#202020", groundVisible: false } };
+  assert.equal(parseLocalStageValue(oldEnvironment).environment.exposure, 1);
+  assert.equal(sameLocalStage(stage, explicit), false);
+  assert.deepEqual(sampleStage(stage, 3), sampleStage(explicit, 3));
+  for (const invalid of [
+    { environment: { ...stage.environment, preset: "sunset" } },
+    { environment: { ...stage.environment, groundColor: "#fff" } },
+    { environment: { ...stage.environment, exposure: -0.1 } },
+    { environment: { ...stage.environment, exposure: 4.1 } },
+    { environment: { ...stage.environment, backgroundAsset: {
+      assetId: "00000000-0000-0000-0000-000000000001",
+      revision: 1,
+      fingerprint: `sha256:${"0".repeat(64)}`,
+      kind: "file",
+    } } },
+    { lights: stage.lights.slice(0, 2) },
+    { lights: stage.lights.map((light) => light.id === "key" ? { ...light, intensity: 11 } : light) },
+    { lights: stage.lights.map((light) => light.id === "key" ? { ...light, color: "#fff" } : light) },
+    { lights: stage.lights.map((light) => light.id === "key" ? { ...light, position: { x: 0, y: 0 } } : light) },
+  ]) assert.throws(() => parseLocalStageValue({ ...stage, ...invalid }), /无效|invalid/i);
+});
+test("camera channels round-trip independently and a position edit does not touch target or focal length", () => {
+  const stage = createLocalStage();
+  const camera = stage.cameras[0]!;
+  const explicit = parseLocalStageValue({
+    ...stage,
+    cameras: [{
+      ...camera,
+      channels: {
+        position: [{ id: "p", time: 2, value: { x: 8, y: 4, z: 6 } }],
+        target: [{ id: "t", time: 2, value: { x: 1, y: 2, z: 0 } }],
+        up: [{ id: "u", time: 2, value: { x: 0, y: 1, z: 0 } }],
+        focalLength: [{ id: "f", time: 2, value: 55 }],
+      },
+    }],
+  });
+  const roundTrip = parseLocalStageValue(JSON.parse(JSON.stringify(explicit)));
+  assert.deepEqual(roundTrip.cameras[0]!.channels, explicit.cameras[0]!.channels);
+  const edited = editStageCameraAt(explicit, "camera-1", 2, {
+    position: { x: 10, y: 4, z: 6 },
+  });
+  const channels = edited.cameras[0]!.channels!;
+  assert.equal(channels.position.at(-1)!.value.x, 10);
+  assert.deepEqual(channels.target, explicit.cameras[0]!.channels!.target);
+  assert.deepEqual(channels.up, explicit.cameras[0]!.channels!.up);
+  assert.deepEqual(channels.focalLength, explicit.cameras[0]!.channels!.focalLength);
+});
+
+test("camera channels reject malformed values and old keyframes keep their sampled result", () => {
+  const legacy = parseLocalStageValue(oldStage());
+  assert.equal(legacy.cameras[0]!.aspectRatio, "16:9");
+  assert.equal(legacy.cameras[0]!.channels!.position.length, 2);
+  assert.equal(sampleStage(legacy, 3).camera.position.x, 8);
+  const oldV2 = createLocalStage();
+  delete (oldV2.cameras[0] as { channels?: StageCameraChannels }).channels;
+  const migratedV2 = parseLocalStageValue(oldV2);
+  assert.deepEqual(migratedV2.cameras[0]!.channels, {
+    position: [],
+    target: [],
+    up: [],
+    focalLength: [],
+  });
+  assert.equal(migratedV2.cameras[0]!.aspectRatio, "16:9");
+  assert.throws(() => parseLocalStageValue({
+    ...createLocalStage(),
+    cameras: [{
+      ...createLocalStage().cameras[0]!,
+      channels: {
+        position: [{ id: "p", time: 2, value: { x: 1, y: 2, z: 3 } }],
+        target: [],
+        up: [],
+        focalLength: [{ id: "f", time: 2, value: 0 }],
+      },
+    }],
+  }), /摄像机|camera/i);
+});
 test("legacy malformed references and duplicate frame times remain rejected during migration", () => {
   const raw = oldStage();
   assert.throws(
@@ -198,6 +349,115 @@ test("the first edit away from zero anchors the opening pose; unchanged orbit co
   const renamed = editStageObjectAt(moved, id, 2, { name: "改名" });
   assert.deepEqual(renamed.objects[0]!.position, moved.objects[0]!.position);
   assert.deepEqual(renamed.objects[0]!.keyframes, moved.objects[0]!.keyframes);
+});
+
+test("an orbit end within renderer float noise commits no camera edit", () => {
+  const stage = createLocalStage();
+  // setCamera round-trips the pose through the renderer's spherical camera
+  // math, so an unchanged camera can read back one ulp away; that must stay
+  // a no-op instead of authoring an epsilon pose with a keyframe.
+  const camera = sampleStage(stage, 0).camera;
+  const drifted = {
+    ...camera,
+    position: {
+      x: camera.position.x + 1e-15,
+      y: camera.position.y,
+      z: camera.position.z,
+    },
+  };
+  const history = createStageHistory(stage);
+  assert.equal(
+    commitStageHistory(
+      history,
+      editStageCameraAt(stage, stage.activeCameraId, 3, drifted),
+    ),
+    history,
+  );
+  // A real camera move still commits and anchors the opening pose.
+  const moved = editStageCameraAt(stage, stage.activeCameraId, 3, {
+    ...camera,
+    position: { x: 6, y: camera.position.y, z: camera.position.z },
+  });
+  assert.notEqual(moved, stage);
+  assert.equal(moved.cameras[0]!.keyframes.length, 2);
+});
+
+test("placement dragging rewrites the base transform without authoring keyframes", () => {
+  const stage = createLocalStage(),
+    id = stage.objects[0]!.id;
+  const placed = editStageObjectPlacement(stage, id, {
+    position: { x: 3, y: 1, z: -2 },
+    rotation: { x: 0, y: 1.2, z: 0 },
+    scale: { x: 2, y: 2, z: 2 },
+  });
+  // Unlike a playhead edit, no anchor frame appears at t=0.
+  assert.deepEqual(placed.objects[0]!.keyframes, []);
+  assert.deepEqual(placed.objects[0]!.position, { x: 3, y: 1, z: -2 });
+  assert.deepEqual(placed.objects[0]!.rotation, { x: 0, y: 1.2, z: 0 });
+  assert.deepEqual(placed.objects[0]!.scale, { x: 2, y: 2, z: 2 });
+  for (const at of [0, 2, stage.duration])
+    assert.deepEqual(sampleStage(placed, at).objects[0]!.position, {
+      x: 3,
+      y: 1,
+      z: -2,
+    });
+  assert.equal(
+    editStageObjectPlacement(stage, "missing", {
+      position: { x: 1, y: 1, z: 1 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    }),
+    stage,
+  );
+  assert.throws(
+    () =>
+      editStageObjectPlacement(stage, id, {
+        position: { x: 1, y: 1, z: 1 },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 0, y: 1, z: 1 },
+      }),
+    /无效/,
+  );
+});
+
+test("placement on keyframed subjects changes only their base transform", () => {
+  const stage = parseLocalStageValue(oldStage());
+  stage.objects.push({
+    id: "box",
+    kind: "box",
+    name: "木箱",
+    color: "#80c9c0",
+    position: { x: 2, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+    visible: true,
+    locked: false,
+    opacity: 1,
+    keyframes: [],
+    motionClips: [],
+  });
+  const parsed = parseLocalStageValue(stage);
+  const placed = editStageObjectPlacement(parsed, "person", {
+    position: { x: 9, y: 1, z: 2 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+  });
+  assert.deepEqual(placed.objects[0]!.keyframes, parsed.objects[0]!.keyframes);
+  assert.deepEqual(placed.objects[0]!.position, { x: 9, y: 1, z: 2 });
+  // The keyframed track still owns sampling; the base write stays UI-gated.
+  assert.deepEqual(sampleStage(placed, 3).objects[0]!.position, {
+    x: 3,
+    y: 3,
+    z: 0,
+  });
+  const other = editStageObjectPlacement(placed, "box", {
+    position: { x: -1, y: 0, z: 4 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+  });
+  assert.deepEqual(other.objects[0]!.keyframes, parsed.objects[0]!.keyframes);
+  assert.deepEqual(other.objects[1]!.keyframes, []);
+  assert.deepEqual(other.objects[1]!.position, { x: -1, y: 0, z: 4 });
 });
 
 test("current-frame capture and removal affect every sampled track, while history restores deleted objects and clips", () => {
@@ -437,7 +697,9 @@ test("the production canvas boundary persists the full edited stage and its chan
   stage.cameras.push({
     id: "second",
     name: "侧面",
+    aspectRatio: "16:9",
     pose: { ...defaultStageCamera(), position: { x: -5, y: 4, z: 0 } },
+    channels: { position: [], target: [], up: [], focalLength: [] },
     keyframes: [],
   });
   stage.cameraSource = "storyboard";

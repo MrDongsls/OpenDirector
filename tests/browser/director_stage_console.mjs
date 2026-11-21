@@ -79,8 +79,18 @@ try {
   );
   itemId = created.canvasItems.find((item) => item.kind === "external").id;
 
-  // The first object added in this browser opens the console controls once.
-  await page.getByRole("button", { name: "+ Person", exact: true }).click();
+  // The first completed placement opens the console controls once: arm,
+  // land the click, then the panel appears.
+  const scene = await page.locator(".cw-stage-scene").boundingBox();
+  assert.ok(scene);
+  await page
+    .locator('.cw-stage-object-grid button[data-stage-placement-kind="person"]')
+    .first()
+    .click();
+  await page.mouse.click(
+    scene.x + scene.width * 0.55,
+    scene.y + scene.height * 0.5,
+  );
   const firstHelp = page.getByRole("dialog", { name: "Director console controls" });
   await firstHelp.getByText("Left-drag · orbit").waitFor();
   await firstHelp
@@ -92,8 +102,15 @@ try {
       .count(),
     0,
   );
-  // A second add does not reopen it: the marker is one-shot.
-  await page.getByRole("button", { name: "+ Person", exact: true }).click();
+  // A second placement does not reopen it: the marker is one-shot.
+  await page
+    .locator('.cw-stage-object-grid button[data-stage-placement-kind="person"]')
+    .first()
+    .click();
+  await page.mouse.click(
+    scene.x + scene.width * 0.45,
+    scene.y + scene.height * 0.5,
+  );
   await page.waitForTimeout(300);
   assert.equal(
     await page
@@ -123,7 +140,10 @@ try {
   );
 
   // Transform sliders pair with the exact inputs and drive the stage.
-  await page.getByRole("button", { name: "+ Person", exact: true }).click();
+  await page
+    .locator('.cw-stage-object-grid button[data-stage-placement-kind="person"]')
+    .first()
+    .click();
   const positionSlider = page.getByLabel("Position X slider", { exact: true });
   await positionSlider.waitFor();
   await positionSlider.fill("5");
@@ -149,8 +169,8 @@ try {
     .find((doc) => doc.kind === "director")
     .data.objects.find((object) => Math.abs(object.position.x - 5) < 1e-6).id;
 
-  // Split live preview: open from a camera row, nudge the divider with the
-  // keyboard, switch tabs, and exit back to the single view.
+  // Each camera can be selected in the independent preview frame after a
+  // camera is duplicated from the right-side inspector.
   await page.locator(`.react-flow__node[data-id="${itemId}"]`).click();
   await page
     .getByRole("button", { name: "Open Director Stage", exact: true })
@@ -161,31 +181,20 @@ try {
   await page
     .getByRole("tab", { name: "Cameras", exact: true })
     .click();
-  await page.getByRole("button", { name: "Add camera", exact: true }).click();
   await page
-    .getByRole("button", { name: "Live preview Camera 2", exact: true })
+    .getByRole("button", { name: "Duplicate as new camera", exact: true })
     .click();
-  const tabs = page.locator(".cw-stage-split-tabs");
-  await tabs.getByRole("tab", { name: "Camera 2", exact: true }).waitFor();
+  const cameraPreviewSelect = page.getByLabel("Preview camera", { exact: true });
+  await cameraPreviewSelect.waitFor();
+  await cameraPreviewSelect.selectOption({ label: "Camera 2" });
   assert.equal(
-    await tabs.getByRole("tab", { name: "Camera 2", exact: true }).getAttribute("aria-selected"),
-    "true",
+    await cameraPreviewSelect.locator("option:checked").innerText(),
+    "Camera 2",
+    "the independent preview follows the selected camera",
   );
-  const divider = page.getByRole("separator", { name: "Split ratio" });
-  await divider.focus();
-  await page.keyboard.press("ArrowRight");
-  assert.equal(await divider.getAttribute("aria-valuenow"), "55");
-  await tabs.getByRole("tab", { name: "Camera 1", exact: true }).click();
-  assert.equal(
-    await tabs.getByRole("tab", { name: "Camera 1", exact: true }).getAttribute("aria-selected"),
-    "true",
-  );
-  await page
-    .getByRole("button", { name: "Exit split view", exact: true })
-    .click();
-  assert.equal(await page.locator(".cw-stage-split-tabs").count(), 0);
+  assert.equal(await page.locator(".cw-stage-pipframe").count(), 1);
 
-  // The split interaction is editor-local: the moved object stays as saved.
+  // The preview selection is editor-local: the moved object stays as saved.
   await page
     .getByRole("button", { name: "Apply edits", exact: true })
     .click();
@@ -216,9 +225,8 @@ console.log(
       "the top-bar shortcuts entry reopens the panel",
       "Escape closes the help panel without closing the editor",
       "transform sliders drive the exact inputs and persist",
-      "camera rows open the split live preview with selected tabs",
-      "the split divider responds to keyboard nudges",
-      "exit split view returns to the single scene",
+      "the right inspector duplicates a camera",
+      "the independent preview follows the selected camera",
       "no page errors",
     ],
   }),

@@ -45,6 +45,9 @@ export interface StageObject extends StageTransform {
     | "halfCylinder";
   name: string;
   color: string;
+  visible: boolean;
+  locked: boolean;
+  opacity: number;
   keyframes: StageTransformFrame[];
   motionClips: StageMotionClip[];
   /** Registered asset identity. Omitted only while a local import is unsaved. */
@@ -69,10 +72,29 @@ export interface StageCamera {
   /** Roll around the view axis in radians; 0 is level. */
   roll?: number;
 }
+export interface StageCameraVectorFrame {
+  id: string;
+  time: number;
+  value: Vector3Value;
+}
+export interface StageCameraNumberFrame {
+  id: string;
+  time: number;
+  value: number;
+}
+export interface StageCameraChannels {
+  position: StageCameraVectorFrame[];
+  target: StageCameraVectorFrame[];
+  up: StageCameraVectorFrame[];
+  focalLength: StageCameraNumberFrame[];
+}
 export interface StageCameraRig {
   id: string;
   name: string;
+  aspectRatio?: (typeof STAGE_RATIOS)[number];
   pose: StageCamera;
+  /** Independent authoritative channels; keyframes remains a compatibility projection. */
+  channels?: StageCameraChannels;
   keyframes: { id: string; time: number; value: StageCamera }[];
 }
 export interface StageShot {
@@ -80,6 +102,22 @@ export interface StageShot {
   cameraId: string;
   start: number;
   duration: number;
+}
+export type StageEnvironmentPreset = "studio" | "warm-sunset" | "moonlit";
+export interface StageEnvironment {
+  preset: StageEnvironmentPreset;
+  groundColor: string;
+  groundVisible: boolean;
+  exposure: number;
+  backgroundAsset: AssetRef | null;
+}
+export type StageLightId = "hemisphere" | "key" | "fill";
+export interface StageLight {
+  id: StageLightId;
+  color: string;
+  intensity: number;
+  position: Vector3Value;
+  castShadow: boolean;
 }
 export const STAGE_RATIOS = [
   "16:9",
@@ -89,6 +127,9 @@ export const STAGE_RATIOS = [
   "4:3",
   "3:4",
 ] as const;
+export const STAGE_FPS = [24, 25, 30, 50, 60] as const;
+const isStageFps = (value: unknown): value is LocalStageDocument["fps"] =>
+  STAGE_FPS.some((fps) => fps === value);
 function hasExternalGltfResources(value: unknown) {
   if (!value || typeof value !== "object") return true;
   const document = value as {
@@ -190,12 +231,15 @@ export interface LocalStageDocument {
   background: string;
   grid: boolean;
   duration: number;
+  fps: (typeof STAGE_FPS)[number];
   aspectRatio: (typeof STAGE_RATIOS)[number];
   cameras: StageCameraRig[];
   activeCameraId: string;
   cameraSource: "camera" | "storyboard";
   shots: StageShot[];
   objects: StageObject[];
+  environment: StageEnvironment;
+  lights: StageLight[];
 }
 export interface StageSampleObject extends StageObject {
   motion?: StageMotion;
@@ -217,6 +261,19 @@ const nonempty = (v: unknown): v is string =>
   typeof v === "string" && !!v.trim();
 const color = (v: unknown): v is string =>
   typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+const stageLightIds = ["hemisphere", "key", "fill"] as const;
+const defaultStageEnvironment = (): StageEnvironment => ({
+  preset: "studio",
+  groundColor: "#181818",
+  groundVisible: true,
+  exposure: 1,
+  backgroundAsset: null,
+});
+const defaultStageLights = (): StageLight[] => [
+  { id: "hemisphere", color: "#ffffff", intensity: 2.4, position: { x: 0, y: 1, z: 0 }, castShadow: false },
+  { id: "key", color: "#ffffff", intensity: 3.5, position: { x: 5, y: 10, z: 6 }, castShadow: true },
+  { id: "fill", color: "#ffffff", intensity: 1.6, position: { x: -6, y: 5, z: -5 }, castShadow: false },
+];
 const assetRef = (v: unknown): v is AssetRef =>
   record(v) &&
   nonempty(v.assetId) &&
@@ -282,6 +339,74 @@ function parseCamera(
     ...(v.roll !== undefined && v.roll !== 0 ? { roll: v.roll } : {}),
   };
 }
+const defaultCameraUp = (): Vector3Value => ({ x: 0, y: 1, z: 0 });
+const cameraFocalLength = (camera: StageCamera) => camera.fov;
+function cameraChannelsFromKeyframes(
+  keyframes: { id: string; time: number; value: StageCamera }[],
+): StageCameraChannels {
+  return {
+    position: keyframes.map(({ id, time, value }) => ({ id, time, value: { ...value.position } })),
+    target: keyframes.map(({ id, time, value }) => ({ id, time, value: { ...value.target } })),
+    up: keyframes.map(({ id, time }) => ({ id, time, value: defaultCameraUp() })),
+    focalLength: keyframes.map(({ id, time, value }) => ({ id, time, value: cameraFocalLength(value) })),
+  };
+}
+function cameraChannelsOf(camera: StageCameraRig): StageCameraChannels {
+  return camera.channels ?? cameraChannelsFromKeyframes(camera.keyframes);
+}
+function parseCameraChannels(
+  raw: unknown,
+  legacy: { id: string; time: number; value: StageCamera }[],
+  duration: number,
+  t: Translate,
+): StageCameraChannels {
+  if (raw === undefined) return cameraChannelsFromKeyframes(legacy);
+  if (!record(raw)) throw new Error(t("editors.stage.error.invalidCamera"));
+  const position = frames(raw.position, duration, (v) => {
+    if (!vector(v)) throw new Error(t("editors.stage.error.invalidCamera"));
+    return { ...v };
+  }, t);
+  const target = frames(raw.target, duration, (v) => {
+    if (!vector(v)) throw new Error(t("editors.stage.error.invalidCamera"));
+    return { ...v };
+  }, t);
+  const up = frames(raw.up, duration, (v) => {
+    if (!vector(v)) throw new Error(t("editors.stage.error.invalidCamera"));
+    return { ...v };
+  }, t);
+  const focalLength = frames(raw.focalLength, duration, (v) => {
+    if (!finite(v) || v <= 0) throw new Error(t("editors.stage.error.invalidCamera"));
+    return v;
+  }, t);
+  return { position, target, up, focalLength };
+}
+function channelAt<T>(base: T, frames: { time: number; value: T }[], time: number, mix: (a: T, b: T, amount: number) => T): T {
+  if (!frames.length) return base;
+  const left = [...frames].reverse().find((f) => f.time <= time) ?? frames[0]!;
+  const right = frames.find((f) => f.time >= time) ?? frames.at(-1)!;
+  return mix(left.value, right.value, left.time === right.time ? 0 : (time - left.time) / (right.time - left.time));
+}
+function cameraKeyframesFromChannels(
+  pose: StageCamera,
+  channels: StageCameraChannels,
+): { id: string; time: number; value: StageCamera }[] {
+  const times = [...new Set([
+    ...channels.position.map((f) => f.time),
+    ...channels.target.map((f) => f.time),
+    ...channels.up.map((f) => f.time),
+    ...channels.focalLength.map((f) => f.time),
+  ])].sort((a, b) => a - b);
+  return times.map((time, index) => ({
+    id: channels.position.find((f) => f.time === time)?.id ?? `camera-channel-${index}`,
+    time,
+    value: {
+      position: channelAt(pose.position, channels.position, time, mixVector),
+      target: channelAt(pose.target, channels.target, time, mixVector),
+      fov: channelAt(pose.fov, channels.focalLength, time, lerp),
+      ...(pose.roll ? { roll: pose.roll } : {}),
+    },
+  }));
+}
 export function defaultStageCamera(): StageCamera {
   return {
     position: { x: 5, y: 3.5, z: 7 },
@@ -298,12 +423,15 @@ export function createLocalStage(
     background: "#151923",
     grid: true,
     duration: 6,
+    fps: 30,
     aspectRatio: "16:9",
     cameras: [
       {
         id: "camera-1",
         name: t("editors.stage.defaultCameraName"),
+        aspectRatio: "16:9",
         pose: defaultStageCamera(),
+        channels: cameraChannelsFromKeyframes([]),
         keyframes: [],
       },
     ],
@@ -316,6 +444,9 @@ export function createLocalStage(
         kind: "person",
         name: t("editors.stage.defaultPersonName"),
         color: "#a09af9",
+        visible: true,
+        locked: false,
+        opacity: 1,
         position: { x: 0, y: 0, z: 0 },
         rotation: { x: 0, y: 0, z: 0 },
         scale: { x: 1, y: 1, z: 1 },
@@ -323,6 +454,8 @@ export function createLocalStage(
         motionClips: [],
       },
     ],
+    environment: defaultStageEnvironment(),
+    lights: defaultStageLights(),
   };
 }
 function frames<T>(
@@ -414,9 +547,12 @@ function migrateV1(
     ...v,
     version: 2,
     aspectRatio: "16:9",
+    fps: 30,
     activeCameraId: "camera-1",
     cameraSource: "camera",
     shots: [],
+    environment: defaultStageEnvironment(),
+    lights: defaultStageLights(),
     cameras: [
       {
         id: "camera-1",
@@ -466,6 +602,22 @@ export function parseLocalStageValue(
   if (record(v) && v.format === "opendirector-local-stage" && v.version === 1)
     v = migrateV1(v, t);
   if (
+    record(v) &&
+    v.format === "opendirector-local-stage" &&
+    v.version === 2 &&
+    v.fps === undefined
+  )
+    v = { ...v, fps: 30 };
+  if (record(v) && v.format === "opendirector-local-stage" && v.version === 2) {
+    v = {
+      ...v,
+      environment: record(v.environment)
+        ? { ...defaultStageEnvironment(), ...v.environment }
+        : defaultStageEnvironment(),
+      lights: v.lights ?? defaultStageLights(),
+    };
+  }
+  if (
     !record(v) ||
     v.format !== "opendirector-local-stage" ||
     v.version !== 2 ||
@@ -473,6 +625,7 @@ export function parseLocalStageValue(
     typeof v.grid !== "boolean" ||
     !finite(v.duration) ||
     v.duration <= 0 ||
+    !isStageFps(v.fps) ||
     !Array.isArray(v.objects) ||
     !Array.isArray(v.cameras) ||
     !Array.isArray(v.shots) ||
@@ -482,6 +635,40 @@ export function parseLocalStageValue(
     !["camera", "storyboard"].includes(String(v.cameraSource))
   )
     throw new Error(t("editors.stage.error.invalidDocument"));
+  const environment = record(v.environment) &&
+    ["studio", "warm-sunset", "moonlit"].includes(String(v.environment.preset)) &&
+    color(v.environment.groundColor) &&
+    typeof v.environment.groundVisible === "boolean" &&
+    finite(v.environment.exposure) &&
+    v.environment.exposure >= 0 && v.environment.exposure <= 4 &&
+    (v.environment.backgroundAsset === null || imageAssetRef(v.environment.backgroundAsset))
+    ? {
+        preset: v.environment.preset as StageEnvironmentPreset,
+        groundColor: v.environment.groundColor,
+        groundVisible: v.environment.groundVisible,
+        exposure: v.environment.exposure,
+        backgroundAsset: v.environment.backgroundAsset as AssetRef | null,
+      }
+      : (() => { throw new Error(t("editors.stage.error.invalidDocument")); })();
+  if (!Array.isArray(v.lights) || v.lights.length !== 3)
+    throw new Error(t("editors.stage.error.invalidDocument"));
+  const lightIds = new Set<string>();
+  const lights: StageLight[] = v.lights.map((raw) => {
+    if (!record(raw) || !stageLightIds.includes(raw.id as StageLightId) || lightIds.has(String(raw.id)) ||
+        !color(raw.color) || !finite(raw.intensity) || raw.intensity < 0 || raw.intensity > 10 ||
+        !vector(raw.position) || typeof raw.castShadow !== "boolean" ||
+        (raw.id === "hemisphere" && raw.castShadow))
+      throw new Error(t("editors.stage.error.invalidDocument"));
+    lightIds.add(String(raw.id));
+    return {
+      id: raw.id as StageLightId,
+      color: raw.color,
+      intensity: raw.intensity,
+      position: { ...raw.position },
+      castShadow: raw.castShadow,
+    };
+  });
+  if (lightIds.size !== 3) throw new Error(t("editors.stage.error.invalidDocument"));
   const duration = v.duration,
     ids = new Set<string>(),
     cameraIds = new Set<string>();
@@ -529,6 +716,9 @@ export function parseLocalStageValue(
           ].includes(String(o.kind)) ||
       typeof o.name !== "string" ||
       !color(o.color) ||
+      (o.visible !== undefined && typeof o.visible !== "boolean") ||
+      (o.locked !== undefined && typeof o.locked !== "boolean") ||
+      (o.opacity !== undefined && (!finite(o.opacity) || o.opacity < 0 || o.opacity > 1)) ||
       !Array.isArray(o.motionClips) ||
       (rawObject?.thumbnailAsset != null && !thumbnailAsset) ||
       (rawObject?.thumbnailCapture != null && !thumbnailCapture) ||
@@ -555,6 +745,9 @@ export function parseLocalStageValue(
       kind: o.kind as StageObject["kind"],
       name: o.name,
       color: o.color,
+      visible: o.visible ?? true,
+      locked: o.locked ?? false,
+      opacity: o.opacity ?? 1,
       ...parseTransform(o, t),
       keyframes: frames(o.keyframes, duration, (v) => parseTransform(v, t), t),
       motionClips: intervals(
@@ -596,11 +789,19 @@ export function parseLocalStageValue(
     )
       throw new Error(t("editors.stage.error.invalidCameraId"));
     cameraIds.add(c.id);
+    const pose = parseCamera(c.pose, t);
+    const keyframes = frames(c.keyframes, duration, (v) => parseCamera(v, t), t);
+    const channels = parseCameraChannels(c.channels, keyframes, duration, t);
+    const aspectRatio = c.aspectRatio ?? v.aspectRatio;
+    if (!STAGE_RATIOS.includes(aspectRatio as LocalStageDocument["aspectRatio"]))
+      throw new Error(t("editors.stage.error.invalidCamera"));
     return {
       id: c.id,
       name: c.name,
-      pose: parseCamera(c.pose, t),
-      keyframes: frames(c.keyframes, duration, (v) => parseCamera(v, t), t),
+      aspectRatio: aspectRatio as LocalStageDocument["aspectRatio"],
+      pose,
+      channels,
+      keyframes: c.channels === undefined ? keyframes : cameraKeyframesFromChannels(pose, channels),
     };
   });
   if (!cameras.length || !cameraIds.has(v.activeCameraId as string))
@@ -626,22 +827,38 @@ export function parseLocalStageValue(
     background: v.background,
     grid: v.grid,
     duration,
+    fps: v.fps,
     aspectRatio: v.aspectRatio as LocalStageDocument["aspectRatio"],
     activeCameraId: v.activeCameraId as string,
     cameraSource: v.cameraSource as LocalStageDocument["cameraSource"],
     objects,
     cameras,
     shots,
+    environment,
+    lights,
   };
 }
+/** Gesture values round-trip through the renderer's spherical camera math,
+ * so an unchanged pose can still differ by float noise; an edit comparison
+ * must treat that as unchanged while parseCamera keeps exact validation. */
+const closeVector = (a: Vector3Value, b: Vector3Value) =>
+  Math.abs(a.x - b.x) < 1e-9 &&
+  Math.abs(a.y - b.y) < 1e-9 &&
+  Math.abs(a.z - b.z) < 1e-9;
 const sameTransform = (a: StageTransform, b: StageTransform) =>
-  sameVector(a.position, b.position) &&
-  sameVector(a.rotation, b.rotation) &&
-  sameVector(a.scale, b.scale);
+  closeVector(a.position, b.position) &&
+  closeVector(a.rotation, b.rotation) &&
+  closeVector(a.scale, b.scale);
 const sameCamera = (a: StageCamera, b: StageCamera) =>
-  sameVector(a.position, b.position) &&
-  sameVector(a.target, b.target) &&
-  a.fov === b.fov;
+  closeVector(a.position, b.position) &&
+  closeVector(a.target, b.target) &&
+  Math.abs(a.fov - b.fov) < 1e-9 &&
+  (a.roll ?? 0) === (b.roll ?? 0);
+const sameCameraChannels = (a: StageCameraChannels, b: StageCameraChannels) =>
+  sameFrames(a.position, b.position, sameVector) &&
+  sameFrames(a.target, b.target, sameVector) &&
+  sameFrames(a.up, b.up, sameVector) &&
+  sameFrames(a.focalLength, b.focalLength, (x, y) => Math.abs(x - y) < 1e-9);
 const sameAsset = (a: AssetRef | undefined, b: AssetRef | undefined) =>
   a === b ||
   (!!a &&
@@ -671,9 +888,22 @@ export function sameLocalStage(
       a.background === b.background &&
       a.grid === b.grid &&
       a.duration === b.duration &&
+      a.fps === b.fps &&
       a.aspectRatio === b.aspectRatio &&
       a.activeCameraId === b.activeCameraId &&
       a.cameraSource === b.cameraSource &&
+      a.environment.preset === b.environment.preset &&
+      a.environment.groundColor === b.environment.groundColor &&
+      a.environment.groundVisible === b.environment.groundVisible &&
+      a.environment.exposure === b.environment.exposure &&
+      sameAsset(a.environment.backgroundAsset ?? undefined, b.environment.backgroundAsset ?? undefined) &&
+      a.lights.length === b.lights.length &&
+      a.lights.every((light, i) => {
+        const other = b.lights[i]!;
+        return light.id === other.id && light.color === other.color &&
+          light.intensity === other.intensity && light.castShadow === other.castShadow &&
+          sameVector(light.position, other.position);
+      }) &&
       a.objects.length === b.objects.length &&
       a.objects.every((o, i) => {
         const p = b.objects[i]!;
@@ -682,6 +912,9 @@ export function sameLocalStage(
           o.name === p.name &&
           o.kind === p.kind &&
           o.color === p.color &&
+          o.visible === p.visible &&
+          o.locked === p.locked &&
+          o.opacity === p.opacity &&
           sameAsset(o.asset, p.asset) &&
           o.role === p.role &&
           o.format === p.format &&
@@ -710,7 +943,9 @@ export function sameLocalStage(
         return (
           c.id === d.id &&
           c.name === d.name &&
+          (c.aspectRatio ?? a.aspectRatio) === (d.aspectRatio ?? b.aspectRatio) &&
           sameCamera(c.pose, d.pose) &&
+          sameCameraChannels(cameraChannelsOf(c), cameraChannelsOf(d)) &&
           sameFrames(c.keyframes, d.keyframes, sameCamera)
         );
       }) &&
@@ -761,11 +996,13 @@ export function sampleStageCamera(
 ): StageCamera {
   const c = stage.cameras.find((c) => c.id === id);
   if (!c) throw new Error(t("editors.stage.error.cameraMissing"));
-  return sample(c.pose, c.keyframes, time, (a, b, t) => ({
-    position: mixVector(a.position, b.position, t),
-    target: mixVector(a.target, b.target, t),
-    fov: lerp(a.fov, b.fov, t),
-  }));
+  const channels = cameraChannelsOf(c);
+  return {
+    position: channelAt(c.pose.position, channels.position, time, mixVector),
+    target: channelAt(c.pose.target, channels.target, time, mixVector),
+    fov: channelAt(c.pose.fov, channels.focalLength, time, lerp),
+    ...(c.pose.roll ? { roll: c.pose.roll } : {}),
+  };
 }
 /** Same global timeline and half-open cut boundaries for editor, screenshots and MP4. */
 export function sampleStage(
@@ -846,7 +1083,7 @@ export function editStageObjectAt(
   t: Translate = defaultTranslate,
 ): LocalStageDocument {
   const pose = sampleStage(stage, time).objects.find((o) => o.id === id);
-  if (!pose) return stage;
+  if (!pose || pose.locked) return stage;
   const transform = parseTransform({ ...pose, ...patch }, t);
   const {
     position: _position,
@@ -876,6 +1113,24 @@ export function editStageObjectAt(
     t,
   );
 }
+/** Placement writes the base transform only and never authors keyframes:
+ * dragging repositions a static subject instead of animating it. */
+export function editStageObjectPlacement(
+  stage: LocalStageDocument,
+  id: string,
+  transform: StageTransform,
+  t: Translate = defaultTranslate,
+): LocalStageDocument {
+  const value = parseTransform(transform, t);
+  if (!stage.objects.some((o) => o.id === id && !o.locked)) return stage;
+  return parseLocalStageValue(
+    {
+      ...stage,
+      objects: stage.objects.map((o) => (o.id === id ? { ...o, ...value } : o)),
+    },
+    t,
+  );
+}
 export function editStageCameraAt(
   stage: LocalStageDocument,
   id: string,
@@ -895,7 +1150,18 @@ export function editStageCameraAt(
           : {
               ...c,
               pose,
-              keyframes: authorFrame(c.keyframes, time, pose, c.pose),
+              channels: {
+                position: sameVector(current.position, pose.position)
+                  ? cameraChannelsOf(c).position
+                  : authorFrame(cameraChannelsOf(c).position, time, pose.position, c.pose.position),
+                target: sameVector(current.target, pose.target)
+                  ? cameraChannelsOf(c).target
+                  : authorFrame(cameraChannelsOf(c).target, time, pose.target, c.pose.target),
+                up: cameraChannelsOf(c).up,
+                focalLength: current.fov === pose.fov
+                  ? cameraChannelsOf(c).focalLength
+                  : authorFrame(cameraChannelsOf(c).focalLength, time, pose.fov, c.pose.fov),
+              },
             },
       ),
     },
@@ -913,15 +1179,25 @@ export function captureStageFrame(
       ...stage,
       objects: stage.objects.map((o) => ({
         ...o,
-        keyframes: putFrame(
-          o.keyframes,
-          time,
-          parseTransform(pose.objects.find((p) => p.id === o.id)!, t),
-        ),
+        keyframes: o.locked
+          ? o.keyframes
+          : putFrame(
+              o.keyframes,
+              time,
+              parseTransform(pose.objects.find((p) => p.id === o.id)!, t),
+            ),
       })),
       cameras: stage.cameras.map((c) =>
         c.id === pose.cameraId
-          ? { ...c, keyframes: putFrame(c.keyframes, time, pose.camera) }
+          ? {
+              ...c,
+              channels: {
+                position: putFrame(cameraChannelsOf(c).position, time, pose.camera.position),
+                target: putFrame(cameraChannelsOf(c).target, time, pose.camera.target),
+                up: putFrame(cameraChannelsOf(c).up, time, defaultCameraUp()),
+                focalLength: putFrame(cameraChannelsOf(c).focalLength, time, pose.camera.fov),
+              },
+            }
           : c,
       ),
     },
@@ -932,7 +1208,12 @@ export function stageFrameTimes(stage: LocalStageDocument): number[] {
   return [
     ...new Set([
       ...stage.objects.flatMap((o) => o.keyframes.map((f) => f.time)),
-      ...stage.cameras.flatMap((c) => c.keyframes.map((f) => f.time)),
+      ...stage.cameras.flatMap((c) => [
+        ...cameraChannelsOf(c).position,
+        ...cameraChannelsOf(c).target,
+        ...cameraChannelsOf(c).up,
+        ...cameraChannelsOf(c).focalLength,
+      ].map((f) => f.time)),
     ]),
   ].sort((a, b) => a - b);
 }
@@ -948,7 +1229,12 @@ export function removeStageFrame(
     })),
     cameras: stage.cameras.map((c) => ({
       ...c,
-      keyframes: c.keyframes.filter((f) => f.time !== time),
+      channels: {
+        position: cameraChannelsOf(c).position.filter((f) => f.time !== time),
+        target: cameraChannelsOf(c).target.filter((f) => f.time !== time),
+        up: cameraChannelsOf(c).up.filter((f) => f.time !== time),
+        focalLength: cameraChannelsOf(c).focalLength.filter((f) => f.time !== time),
+      },
     })),
   };
 }

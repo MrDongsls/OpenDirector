@@ -2597,6 +2597,8 @@ export function WorkspaceView({ rt }: { rt: WorkspaceRuntime }) {
           }
         >
           <DirectorStage
+            backgroundAssets={creationClient(doc.id).snapshot.assets.filter((asset) => asset.kind === "image")}
+            resolveAssetUrl={(ref) => creationClient(doc.id).mediaUrl(ref.assetId)}
             isRegisteredAsset={(ref) => {
               // Same consistency the backend snapshot check demands.
               const assets = creationClient(doc.id).snapshot.assets;
