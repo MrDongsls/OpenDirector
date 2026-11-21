@@ -1200,6 +1200,7 @@ export interface StageCameraInput extends ContractInput {
   readonly position: Vector3Input;
   readonly target: Vector3Input;
   readonly fov: number;
+  readonly roll?: number;
 }
 
 export interface StageMotionInput extends ContractInput {
@@ -1210,7 +1211,7 @@ export interface StageMotionInput extends ContractInput {
 
 export interface StageObjectInput extends StageTransformInput {
   readonly id: string;
-  readonly kind: "person" | "box" | "sphere" | "gltf";
+  readonly kind: "person" | "box" | "sphere" | "gltf" | "cylinder" | "cone" | "pyramid" | "torus" | "plane" | "capsule" | "disk" | "arc" | "halfCylinder";
   readonly name: string;
   readonly color: string;
   readonly keyframes?: ReadonlyArray<TransformFrameInput>;
@@ -2797,6 +2798,7 @@ export interface StageCamera extends Contract {
   readonly position: Vector3;
   readonly target: Vector3;
   readonly fov: number;
+  readonly roll: number;
 }
 
 export interface StageMotion extends Contract {
@@ -2807,7 +2809,7 @@ export interface StageMotion extends Contract {
 
 export interface StageObject extends StageTransform {
   readonly id: string;
-  readonly kind: "person" | "box" | "sphere" | "gltf";
+  readonly kind: "person" | "box" | "sphere" | "gltf" | "cylinder" | "cone" | "pyramid" | "torus" | "plane" | "capsule" | "disk" | "arc" | "halfCylinder";
   readonly name: string;
   readonly color: string;
   readonly keyframes: ReadonlyArray<TransformFrame>;

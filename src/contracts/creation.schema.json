@@ -11496,6 +11496,14 @@
             "exclusiveMinimum": 0,
             "title": "Fov",
             "type": "number"
+          },
+          "roll": {
+            "default": 0.0,
+            "description": "Roll around the view axis in radians.",
+            "maximum": 3.141592653589793,
+            "minimum": -3.141592653589793,
+            "title": "Roll",
+            "type": "number"
           }
         },
         "required": [
@@ -11571,7 +11579,16 @@
               "person",
               "box",
               "sphere",
-              "gltf"
+              "gltf",
+              "cylinder",
+              "cone",
+              "pyramid",
+              "torus",
+              "plane",
+              "capsule",
+              "disk",
+              "arc",
+              "halfCylinder"
             ],
             "title": "Kind",
             "type": "string"
@@ -27270,12 +27287,21 @@
             "exclusiveMinimum": 0,
             "title": "Fov",
             "type": "number"
+          },
+          "roll": {
+            "default": 0.0,
+            "description": "Roll around the view axis in radians.",
+            "maximum": 3.141592653589793,
+            "minimum": -3.141592653589793,
+            "title": "Roll",
+            "type": "number"
           }
         },
         "required": [
           "position",
           "target",
-          "fov"
+          "fov",
+          "roll"
         ],
         "title": "StageCamera",
         "type": "object"
@@ -27345,7 +27371,16 @@
               "person",
               "box",
               "sphere",
-              "gltf"
+              "gltf",
+              "cylinder",
+              "cone",
+              "pyramid",
+              "torus",
+              "plane",
+              "capsule",
+              "disk",
+              "arc",
+              "halfCylinder"
             ],
             "title": "Kind",
             "type": "string"

@@ -29,7 +29,20 @@ export type StageAssetRole = "character" | "scene";
 export type StageAssetFormat = "glb" | "gltf";
 export interface StageObject extends StageTransform {
   id: string;
-  kind: "person" | "box" | "sphere" | "gltf";
+  kind:
+    | "person"
+    | "box"
+    | "sphere"
+    | "gltf"
+    | "cylinder"
+    | "cone"
+    | "pyramid"
+    | "torus"
+    | "plane"
+    | "capsule"
+    | "disk"
+    | "arc"
+    | "halfCylinder";
   name: string;
   color: string;
   keyframes: StageTransformFrame[];
@@ -47,6 +60,8 @@ export interface StageCamera {
   position: Vector3Value;
   target: Vector3Value;
   fov: number;
+  /** Roll around the view axis in radians; 0 is level. */
+  roll?: number;
 }
 export interface StageCameraRig {
   id: string;
@@ -238,10 +253,17 @@ function parseCamera(
     !finite(v.fov) ||
     v.fov <= 0 ||
     v.fov >= 180 ||
-    sameVector(v.position, v.target)
+    sameVector(v.position, v.target) ||
+    (v.roll !== undefined &&
+      (!finite(v.roll) || Math.abs(v.roll) > Math.PI))
   )
     throw new Error(t("editors.stage.error.invalidCamera"));
-  return { position: { ...v.position }, target: { ...v.target }, fov: v.fov };
+  return {
+    position: { ...v.position },
+    target: { ...v.target },
+    fov: v.fov,
+    ...(v.roll !== undefined && v.roll !== 0 ? { roll: v.roll } : {}),
+  };
 }
 export function defaultStageCamera(): StageCamera {
   return {
@@ -463,7 +485,21 @@ export function parseLocalStageValue(
       !record(o) ||
       !nonempty(o.id) ||
       ids.has(o.id) ||
-      !["person", "box", "sphere", "gltf"].includes(String(o.kind)) ||
+      ![
+            "person",
+            "box",
+            "sphere",
+            "gltf",
+            "cylinder",
+            "cone",
+            "pyramid",
+            "torus",
+            "plane",
+            "capsule",
+            "disk",
+            "arc",
+            "halfCylinder",
+          ].includes(String(o.kind)) ||
       typeof o.name !== "string" ||
       !color(o.color) ||
       !Array.isArray(o.motionClips) ||

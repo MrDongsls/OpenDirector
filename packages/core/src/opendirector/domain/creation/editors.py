@@ -378,7 +378,7 @@ class MotionClip(Contract):
 
 class StageObject(StageTransform):
     id: Identifier = Field(description='Stable object ID.')
-    kind: Literal['person', 'box', 'sphere', 'gltf'] = Field(description='Business object or media type.')
+    kind: Literal['person', 'box', 'sphere', 'gltf', 'cylinder', 'cone', 'pyramid', 'torus', 'plane', 'capsule', 'disk', 'arc', 'halfCylinder'] = Field(description='Business object or media type.')
     name: str = Field(max_length=255, description='User-visible name.')
     color: Color = Field(description='Serialized display color.')
     keyframes: tuple[TransformFrame, ...] = Field(default=(), description='Ordered animation keyframes.')
@@ -426,6 +426,7 @@ class StageCamera(Contract):
     position: Vector3 = Field(description='Position in the owning canvas or stage.')
     target: Vector3 = Field(description='Camera look-at position.')
     fov: Annotated[float, Field(strict=True, gt=0, lt=180)] = Field(description='Camera vertical field of view in degrees.')
+    roll: Annotated[float, Field(strict=True, ge=-3.141592653589793, le=3.141592653589793)] = Field(default=0.0, description='Roll around the view axis in radians.')
 
     @model_validator(mode='after')
     def direction(self):
