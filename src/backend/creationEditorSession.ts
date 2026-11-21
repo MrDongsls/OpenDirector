@@ -159,10 +159,9 @@ export class CreationEditorSession {
     } catch (error) {
       // Only a definitive rejection releases the operation. Its version basis
       // remains unchanged: retrying must not silently overwrite a newer edit.
-      // A transport-level 4xx refusal is definitive too — the same bytes can
-      // never succeed — so a plan the backend refused at the HTTP boundary
-      // (for example one prepared by an older schema) must not be replayed
-      // forever from the stored delivery.
+      // This session treats these transport-level 4xx statuses as definitive,
+      // so a delivery refused at the HTTP boundary (for example one prepared
+      // by an older schema) is not replayed forever from stored state.
       if (
         error instanceof CreationCommandError ||
         (error instanceof ApiError &&

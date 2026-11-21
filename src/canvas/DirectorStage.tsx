@@ -995,7 +995,7 @@ export function DirectorStage({
   };
   const captureKeyframe = () =>
     edit((current) => captureStageFrame(current, timeRef.current));
-  /** Same sampler and output frame as the MP4 render, at the encoder aspect. */
+  /** Capture an encoder-sized frame from the current stage sampler. */
   const captureOutputStill = () => {
     const current = runtime.current;
     if (!current) throw new Error(t("editors.stage.ui.rendererNotReady"));

@@ -149,6 +149,9 @@ export class CreationProjection {
     fileBytes?: boolean;
     identity?: string;
     fresh?: boolean;
+    /** A publication persists this handle before uploading so a reload can
+     * retry the same staged bytes instead of creating a new asset identity. */
+    uploadHandle?: string;
     previous?: AssetRef;
     /** Archive provenance: the backend records an imported source instead of
      * treating the upload as a plain user file. */
@@ -190,7 +193,10 @@ export class CreationProjection {
         const name = /\.[\w]+$/.test(resource.title)
           ? resource.title
           : `${resource.title}.${suffix}`;
-        const handle = this.importHandles.get(key) ?? crypto.randomUUID();
+        const handle =
+          resource.uploadHandle ??
+          this.importHandles.get(key) ??
+          crypto.randomUUID();
         this.importHandles.set(key, handle);
         return this.client.importBlob(
           blob,

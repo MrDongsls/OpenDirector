@@ -175,6 +175,8 @@ export const errors = {
   "errors.backend.materialReference": "素材节点不能直接接受生成参考。",
   "errors.backend.fixedReferenceMissing": "固定参考版本已缺失或内容已改变。",
   "errors.backend.savingResult": "结果正在保存，请稍候。",
+  "errors.backend.mediaPreparationPending":
+    "上一次媒体发布仍在准备中，请先重试后再更改输出。",
   "errors.backend.editSourceUnsaved": "编辑来源尚未保存。",
   "errors.backend.notDirectorStage": "不是可发布的导演舞台。",
   "errors.backend.noRealMedia": "编辑来源没有真实素材。",

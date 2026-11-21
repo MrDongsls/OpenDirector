@@ -87,14 +87,15 @@ export class CreationClient {
   constructor(id: string) {
     this.id = id;
     // This is a transport outbox, not a second job store. A page reload must
-    // retain the original command ID when a paid submission's reply is lost.
+    // retain the original command ID when a generation or asset-import reply
+    // is lost.
     try {
       const pending: [string, Record<string, unknown>][] = JSON.parse(
         sessionStorage.getItem(this.deliveryKey()) ?? "[]",
       );
       for (const [intent, body] of pending)
         if (
-          body.type === "generation.submit" &&
+          (body.type === "generation.submit" || body.type === "asset.import") &&
           body.projectId === id &&
           typeof body.commandId === "string"
         )
@@ -108,8 +109,8 @@ export class CreationClient {
   }
   private saveDeliveries() {
     try {
-      const pending = [...this.deliveries].filter(
-        ([, body]) => body.type === "generation.submit",
+      const pending = [...this.deliveries].filter(([, body]) =>
+        body.type === "generation.submit" || body.type === "asset.import",
       );
       if (pending.length)
         sessionStorage.setItem(this.deliveryKey(), JSON.stringify(pending));
