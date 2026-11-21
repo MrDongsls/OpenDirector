@@ -1261,9 +1261,13 @@ export function unregisteredStageAssets(
   stage: LocalStageDocument,
   isRegistered: (asset: AssetRef) => boolean,
 ): StageObject[] {
-  return stage.objects.filter(
-    (object) => object.kind === "gltf" && object.asset && !isRegistered(object.asset),
-  );
+  return stage.objects.filter((object) => {
+    const modelMissing =
+      object.kind === "gltf" && object.asset && !isRegistered(object.asset);
+    const thumbnailMissing =
+      object.thumbnailAsset && !isRegistered(object.thumbnailAsset);
+    return Boolean(modelMissing || thumbnailMissing);
+  });
 }
 /** The camera plan an export run follows. "storyboard" concatenates the
  * shot list into the exported timeline, skipping uncovered gaps; a camera

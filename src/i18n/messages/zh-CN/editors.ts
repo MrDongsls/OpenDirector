@@ -290,6 +290,8 @@ export const editors = {
     "目前仅支持 GLB 和自包含 GLTF；FBX 及外部 GLTF 资源暂不支持。",
   "editors.stage.ui.assetImported": "已导入 {name} · {animationCount} 个动画片段",
   "editors.stage.ui.assetImportedStatic": "已导入 {name} · 无动画数据",
+  "editors.stage.ui.thumbnailFailed":
+    "已导入{name}，但无法生成预览缩略图。",
   "editors.stage.ui.degreesSuffix": "（度）",
   "editors.stage.ui.editFailed": "舞台修改失败。",
   "editors.stage.ui.cameraName": "摄像机 {number}",
