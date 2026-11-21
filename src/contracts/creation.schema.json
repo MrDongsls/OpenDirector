@@ -2896,6 +2896,18 @@
             ],
             "title": "Document"
           },
+          "directorPlan": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DirectorOutputPlan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Frozen Director video output plan, when publishing a stage video."
+          },
           "outputs": {
             "description": "Ordered published media outputs.",
             "items": {
@@ -4210,6 +4222,7 @@
             "description": "Output width-to-height ratio.",
             "enum": [
               "16:9",
+              "2.39:1",
               "9:16",
               "1:1",
               "4:3",
@@ -4261,6 +4274,15 @@
               "$ref": "#/$defs/StageObject"
             },
             "title": "Objects",
+            "type": "array"
+          },
+          "stills": {
+            "default": [],
+            "description": "Captured still frames pinned as project image assets, oldest first.",
+            "items": {
+              "$ref": "#/$defs/AssetRef"
+            },
+            "title": "Stills",
             "type": "array"
           }
         },
@@ -4329,6 +4351,69 @@
           "data"
         ],
         "title": "DirectorDocument",
+        "type": "object"
+      },
+      "DirectorOutputPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "cameraSource": {
+            "description": "Camera selection strategy fixed for this render.",
+            "enum": [
+              "camera",
+              "storyboard"
+            ],
+            "title": "Camerasource",
+            "type": "string"
+          },
+          "cameraId": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Camera rig fixed for a camera render; omitted for storyboard renders.",
+            "title": "Cameraid"
+          },
+          "width": {
+            "description": "Expected output width in pixels.",
+            "minimum": 1,
+            "title": "Width",
+            "type": "integer"
+          },
+          "height": {
+            "description": "Expected output height in pixels.",
+            "minimum": 1,
+            "title": "Height",
+            "type": "integer"
+          },
+          "durationSeconds": {
+            "description": "Expected output duration in seconds.",
+            "exclusiveMinimum": 0,
+            "title": "Durationseconds",
+            "type": "number"
+          },
+          "frameRate": {
+            "description": "Expected output frames per second.",
+            "exclusiveMinimum": 0,
+            "title": "Framerate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cameraSource",
+          "width",
+          "height",
+          "durationSeconds",
+          "frameRate"
+        ],
+        "title": "DirectorOutputPlan",
         "type": "object"
       },
       "EditorBinding": {
@@ -8071,6 +8156,35 @@
             "default": null,
             "description": "Audio channel count.",
             "title": "Channels"
+          },
+          "selfContained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whether a model container embeds all its buffers and images.",
+            "title": "Selfcontained"
+          },
+          "animationNames": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Animation clip names declared by a parsed model container, in document order.",
+            "title": "Animationnames"
           }
         },
         "required": [
@@ -11456,7 +11570,8 @@
             "enum": [
               "person",
               "box",
-              "sphere"
+              "sphere",
+              "gltf"
             ],
             "title": "Kind",
             "type": "string"
@@ -11490,6 +11605,67 @@
             },
             "title": "Motionclips",
             "type": "array"
+          },
+          "asset": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Registered GLB or self-contained GLTF asset for an imported stage object."
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "scene"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Imported stage object role.",
+            "title": "Role"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "enum": [
+                  "glb",
+                  "gltf"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Imported stage asset container format.",
+            "title": "Format"
+          },
+          "animationNames": {
+            "default": [],
+            "description": "Animation clip names discovered in the imported asset.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Animationnames",
+            "type": "array"
+          },
+          "hasAnimation": {
+            "default": false,
+            "description": "Whether the imported asset contains animation clips.",
+            "title": "Hasanimation",
+            "type": "boolean"
           }
         },
         "required": [
@@ -18175,6 +18351,18 @@
             ],
             "title": "Document"
           },
+          "directorPlan": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DirectorOutputPlan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Frozen Director video output plan, when publishing a stage video."
+          },
           "outputs": {
             "description": "Ordered published media outputs.",
             "items": {
@@ -18191,6 +18379,7 @@
           "source",
           "sourceEditorId",
           "document",
+          "directorPlan",
           "outputs"
         ],
         "title": "CanvasPublishMedia",
@@ -19516,6 +19705,7 @@
             "description": "Output width-to-height ratio.",
             "enum": [
               "16:9",
+              "2.39:1",
               "9:16",
               "1:1",
               "4:3",
@@ -19568,6 +19758,15 @@
             },
             "title": "Objects",
             "type": "array"
+          },
+          "stills": {
+            "default": [],
+            "description": "Captured still frames pinned as project image assets, oldest first.",
+            "items": {
+              "$ref": "#/$defs/AssetRef"
+            },
+            "title": "Stills",
+            "type": "array"
           }
         },
         "required": [
@@ -19579,7 +19778,8 @@
           "activeCameraId",
           "cameraSource",
           "shots",
-          "objects"
+          "objects",
+          "stills"
         ],
         "title": "DirectorData",
         "type": "object"
@@ -19643,6 +19843,70 @@
           "data"
         ],
         "title": "DirectorDocument",
+        "type": "object"
+      },
+      "DirectorOutputPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "cameraSource": {
+            "description": "Camera selection strategy fixed for this render.",
+            "enum": [
+              "camera",
+              "storyboard"
+            ],
+            "title": "Camerasource",
+            "type": "string"
+          },
+          "cameraId": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Camera rig fixed for a camera render; omitted for storyboard renders.",
+            "title": "Cameraid"
+          },
+          "width": {
+            "description": "Expected output width in pixels.",
+            "minimum": 1,
+            "title": "Width",
+            "type": "integer"
+          },
+          "height": {
+            "description": "Expected output height in pixels.",
+            "minimum": 1,
+            "title": "Height",
+            "type": "integer"
+          },
+          "durationSeconds": {
+            "description": "Expected output duration in seconds.",
+            "exclusiveMinimum": 0,
+            "title": "Durationseconds",
+            "type": "number"
+          },
+          "frameRate": {
+            "description": "Expected output frames per second.",
+            "exclusiveMinimum": 0,
+            "title": "Framerate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cameraSource",
+          "cameraId",
+          "width",
+          "height",
+          "durationSeconds",
+          "frameRate"
+        ],
+        "title": "DirectorOutputPlan",
         "type": "object"
       },
       "EditorBinding": {
@@ -23562,6 +23826,35 @@
             "default": null,
             "description": "Audio channel count.",
             "title": "Channels"
+          },
+          "selfContained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whether a model container embeds all its buffers and images.",
+            "title": "Selfcontained"
+          },
+          "animationNames": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Animation clip names declared by a parsed model container, in document order.",
+            "title": "Animationnames"
           }
         },
         "required": [
@@ -23573,7 +23866,9 @@
           "frameRate",
           "hasAudio",
           "sampleRate",
-          "channels"
+          "channels",
+          "selfContained",
+          "animationNames"
         ],
         "title": "MediaMetadata",
         "type": "object"
@@ -27049,7 +27344,8 @@
             "enum": [
               "person",
               "box",
-              "sphere"
+              "sphere",
+              "gltf"
             ],
             "title": "Kind",
             "type": "string"
@@ -27083,6 +27379,67 @@
             },
             "title": "Motionclips",
             "type": "array"
+          },
+          "asset": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Registered GLB or self-contained GLTF asset for an imported stage object."
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "scene"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Imported stage object role.",
+            "title": "Role"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "enum": [
+                  "glb",
+                  "gltf"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Imported stage asset container format.",
+            "title": "Format"
+          },
+          "animationNames": {
+            "default": [],
+            "description": "Animation clip names discovered in the imported asset.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Animationnames",
+            "type": "array"
+          },
+          "hasAnimation": {
+            "default": false,
+            "description": "Whether the imported asset contains animation clips.",
+            "title": "Hasanimation",
+            "type": "boolean"
           }
         },
         "required": [
@@ -27094,7 +27451,12 @@
           "name",
           "color",
           "keyframes",
-          "motionClips"
+          "motionClips",
+          "asset",
+          "role",
+          "format",
+          "animationNames",
+          "hasAnimation"
         ],
         "title": "StageObject",
         "type": "object"

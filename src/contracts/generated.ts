@@ -313,6 +313,7 @@ export interface CanvasPublishMediaInput extends ContractInput {
   readonly source?: AssetRefInput | null;
   readonly sourceEditorId?: string | null;
   readonly document: TimelineDocumentInput | SubjectDocumentInput | LayerDocumentInput | ImageCropDocumentInput | StackDocumentInput | ToolDocumentInput | DirectorDocumentInput | MediaEditDocumentInput;
+  readonly directorPlan?: DirectorOutputPlanInput | null;
   readonly outputs: ReadonlyArray<MediaPublicationOutputInput>;
 }
 
@@ -427,17 +428,27 @@ export interface DirectorDataInput extends ContractInput {
   readonly background: string;
   readonly grid?: boolean;
   readonly duration: number;
-  readonly aspectRatio?: "16:9" | "9:16" | "1:1" | "4:3" | "3:4";
+  readonly aspectRatio?: "16:9" | "2.39:1" | "9:16" | "1:1" | "4:3" | "3:4";
   readonly cameras: ReadonlyArray<CameraRigInput>;
   readonly activeCameraId: string;
   readonly cameraSource?: "camera" | "storyboard";
   readonly shots?: ReadonlyArray<StageShotInput>;
   readonly objects?: ReadonlyArray<StageObjectInput>;
+  readonly stills?: ReadonlyArray<AssetRefInput>;
 }
 
 export interface DirectorDocumentInput extends EditorDocumentBaseInput {
   readonly kind: "director";
   readonly data: DirectorDataInput;
+}
+
+export interface DirectorOutputPlanInput extends ContractInput {
+  readonly cameraSource: "camera" | "storyboard";
+  readonly cameraId?: string | null;
+  readonly width: number;
+  readonly height: number;
+  readonly durationSeconds: number;
+  readonly frameRate: number;
 }
 
 export interface EditorBindingInput extends ContractInput {
@@ -805,6 +816,8 @@ export interface MediaMetadataInput extends ContractInput {
   readonly hasAudio?: boolean | null;
   readonly sampleRate?: number | null;
   readonly channels?: number | null;
+  readonly selfContained?: boolean | null;
+  readonly animationNames?: ReadonlyArray<string> | null;
 }
 
 export interface MediaPublicationOutputInput extends ContractInput {
@@ -1197,11 +1210,16 @@ export interface StageMotionInput extends ContractInput {
 
 export interface StageObjectInput extends StageTransformInput {
   readonly id: string;
-  readonly kind: "person" | "box" | "sphere";
+  readonly kind: "person" | "box" | "sphere" | "gltf";
   readonly name: string;
   readonly color: string;
   readonly keyframes?: ReadonlyArray<TransformFrameInput>;
   readonly motionClips?: ReadonlyArray<MotionClipInput>;
+  readonly asset?: AssetRefInput | null;
+  readonly role?: "character" | "scene" | null;
+  readonly format?: "glb" | "gltf" | null;
+  readonly animationNames?: ReadonlyArray<string>;
+  readonly hasAnimation?: boolean;
 }
 
 export interface StageShotInput extends ContractInput {
@@ -1893,6 +1911,7 @@ export interface CanvasPublishMedia extends Contract {
   readonly source: AssetRef | null;
   readonly sourceEditorId: string | null;
   readonly document: TimelineDocument | SubjectDocument | LayerDocument | ImageCropDocument | StackDocument | ToolDocument | DirectorDocument | MediaEditDocument;
+  readonly directorPlan: DirectorOutputPlan | null;
   readonly outputs: ReadonlyArray<MediaPublicationOutput>;
 }
 
@@ -2007,17 +2026,27 @@ export interface DirectorData extends Contract {
   readonly background: string;
   readonly grid: boolean;
   readonly duration: number;
-  readonly aspectRatio: "16:9" | "9:16" | "1:1" | "4:3" | "3:4";
+  readonly aspectRatio: "16:9" | "2.39:1" | "9:16" | "1:1" | "4:3" | "3:4";
   readonly cameras: ReadonlyArray<CameraRig>;
   readonly activeCameraId: string;
   readonly cameraSource: "camera" | "storyboard";
   readonly shots: ReadonlyArray<StageShot>;
   readonly objects: ReadonlyArray<StageObject>;
+  readonly stills: ReadonlyArray<AssetRef>;
 }
 
 export interface DirectorDocument extends EditorDocumentBase {
   readonly kind: "director";
   readonly data: DirectorData;
+}
+
+export interface DirectorOutputPlan extends Contract {
+  readonly cameraSource: "camera" | "storyboard";
+  readonly cameraId: string | null;
+  readonly width: number;
+  readonly height: number;
+  readonly durationSeconds: number;
+  readonly frameRate: number;
 }
 
 export interface EditorBinding extends Contract {
@@ -2385,6 +2414,8 @@ export interface MediaMetadata extends Contract {
   readonly hasAudio: boolean | null;
   readonly sampleRate: number | null;
   readonly channels: number | null;
+  readonly selfContained: boolean | null;
+  readonly animationNames: ReadonlyArray<string> | null;
 }
 
 export interface MediaPublicationOutput extends Contract {
@@ -2776,11 +2807,16 @@ export interface StageMotion extends Contract {
 
 export interface StageObject extends StageTransform {
   readonly id: string;
-  readonly kind: "person" | "box" | "sphere";
+  readonly kind: "person" | "box" | "sphere" | "gltf";
   readonly name: string;
   readonly color: string;
   readonly keyframes: ReadonlyArray<TransformFrame>;
   readonly motionClips: ReadonlyArray<MotionClip>;
+  readonly asset: AssetRef | null;
+  readonly role: "character" | "scene" | null;
+  readonly format: "glb" | "gltf" | null;
+  readonly animationNames: ReadonlyArray<string>;
+  readonly hasAnimation: boolean;
 }
 
 export interface StageShot extends Contract {

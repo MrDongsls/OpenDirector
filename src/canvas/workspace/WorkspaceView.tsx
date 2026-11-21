@@ -2597,29 +2597,41 @@ export function WorkspaceView({ rt }: { rt: WorkspaceRuntime }) {
           }
         >
           <DirectorStage
-            onPrepareRender={async (localStage) => {
-              await commitEditorData({ localStage });
+            isRegisteredAsset={(ref) => {
+              // Same consistency the backend snapshot check demands.
+              const assets = creationClient(doc.id).snapshot.assets;
+              return assets.some(
+                (asset) =>
+                  asset.id === ref.assetId &&
+                  asset.fingerprint === ref.fingerprint &&
+                  asset.kind === ref.kind &&
+                  ref.revision <= asset.revision,
+              );
+            }}
+            onPrepareRender={async (localStage, stills, directorPlan) => {
+              await commitEditorData({
+                localStage,
+                // The stills draft commits with the stage so publications
+                // pin the very stills the drawer sends.
+                ...(stills ? { stills } : {}),
+              });
               const origin = editorOrigin.current!;
               const client = creationClient(doc.id);
               mediaPublications.current.set(
                 origin,
                 new MediaPublication(client, client.snapshot, origin.nodeId),
               );
-              return async (result) => addLinkedOutputs(origin, [result]);
+              return async (result) =>
+                addLinkedOutputs(origin, [result], undefined, directorPlan);
             }}
             onRender={(result) => editorOutputs([result])}
             node={editing}
-            onApply={(localStage, screenshot) =>
+            onApply={(localStage, stills) =>
               commitEditorData({
                 localStage,
-                ...(screenshot
-                  ? {
-                      src: screenshot,
-                      mimeType: "image/png",
-                      assetState: "ready",
-                      media: undefined,
-                    }
-                  : {}),
+                // The save projection imports capture bytes and pins the
+                // resulting project assets on the director document.
+                ...(stills ? { stills } : {}),
               })
             }
             onClose={closeEditor}

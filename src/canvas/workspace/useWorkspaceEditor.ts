@@ -11,6 +11,7 @@ import { workspaceProjection } from "../../backend/workspace";
 import { lockedNodeIds } from "../hierarchy";
 import { captureEditorSource, validateNodeActionSource, type LinkedMediaResult, type ResultSource } from "../linkedResults";
 import { type CanvasDocument, type CanvasNode, type CanvasNodeData } from "../model";
+import type { DirectorOutputPlanInput } from "../../contracts/generated.ts";
 import { createVideoExtensionDraft } from "../nodeActionWorkflow";
 import { getNodeGenerationSettings } from "../NodeComposer";
 import { resourceFromNode } from "../operations";
@@ -165,6 +166,7 @@ export function useWorkspaceEditor(rt: WorkspaceRuntime) {
     source: ResultSource,
     outputs: readonly LinkedMediaResult[],
     sourceTask?: CanvasToolTask,
+    directorPlan?: DirectorOutputPlanInput,
   ) => {
     if (editorSaving.current) throw Error(t("canvas.workspace.error.editorSaving"));
     if (historyRef.current.present.id !== source.documentId)
@@ -200,7 +202,7 @@ export function useWorkspaceEditor(rt: WorkspaceRuntime) {
         mediaPublications.current.set(source, publication);
       }
       const task = sourceTask;
-      const ids = await publication.publish(outputs, task);
+      const ids = await publication.publish(outputs, task, directorPlan);
       const projection = workspaceProjection(current.id);
       const snapshot = client.snapshot;
       const next = await projection.read(snapshot);

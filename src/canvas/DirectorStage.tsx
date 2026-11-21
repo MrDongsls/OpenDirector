@@ -2,11 +2,18 @@ import { useEditorCommit, type EditorApplyResult } from "./useEditorCommit";
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { CanvasNode } from "./model";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { clone as cloneSkinnedObject } from "three/addons/utils/SkeletonUtils.js";
+import type { CanvasNode, StageStillItem } from "./model";
+import type {
+  AssetRef,
+  DirectorOutputPlanInput,
+} from "../contracts/generated.ts";
 import { ControlSlider } from "./ControlSlider";
 import {
   createLocalStage,
   parseLocalStageValue,
+  probeStageAsset,
   sampleStage,
   editStageObjectAt,
   editStageCameraAt,
@@ -14,8 +21,11 @@ import {
   stageFrameTimes,
   removeStageFrame,
   stageOutputSize,
+  stageExportPlan,
+  unregisteredStageAssets,
   defaultStageCamera,
   STAGE_RATIOS,
+  STAGE_ASSET_MAX_BYTES,
 } from "./stageDocument";
 import type {
   LocalStageDocument,
@@ -26,6 +36,7 @@ import type {
   StageShot,
   StageObject,
   StageTransform,
+  StageAssetRole,
   Vector3Value,
 } from "./stageDocument";
 import {
@@ -36,7 +47,12 @@ import {
 } from "./stageHistory";
 import { EditorModal } from "./EditorModal";
 import "./director-stage.css";
-import { STAGE_MOTIONS, sampleJointPose } from "./stageMotion";
+import {
+  STAGE_MOTIONS,
+  sampleJointPose,
+  selectStageAnimation,
+  type StageMotion,
+} from "./stageMotion";
 import { encodeMp4 } from "./mp4Export";
 import { downloadFile, downloadFilename } from "./assets";
 import { withMediaDuration } from "./editorMedia";
@@ -49,13 +65,35 @@ export interface DirectorStageProps {
   node: CanvasNode;
   onApply: (
     stage: LocalStageDocument,
-    screenshot?: string,
+    stills?: StageStillItem[],
   ) => EditorApplyResult;
   onClose: () => void;
   onRender: (result: LinkedMediaResult) => boolean | Promise<boolean>;
   onPrepareRender?: (
     stage: LocalStageDocument,
+    stills?: StageStillItem[],
+    directorPlan?: DirectorOutputPlanInput,
   ) => Promise<(result: LinkedMediaResult) => Promise<boolean>>;
+  /** Whether a pinned asset is registered in the currently open project;
+   * stage JSON imports reject objects pinning assets it reports as absent. */
+  isRegisteredAsset?: (asset: AssetRef) => boolean;
+}
+interface LoadedStageAsset {
+  scene: THREE.Object3D;
+  animations: THREE.AnimationClip[];
+}
+interface RestPose {
+  object: THREE.Object3D;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  scale: THREE.Vector3;
+}
+interface ImportedRuntime {
+  root: THREE.Group;
+  clips: THREE.AnimationClip[];
+  mixer?: THREE.AnimationMixer;
+  activeClip?: THREE.AnimationClip;
+  restPose: RestPose[];
 }
 interface StageRuntime {
   renderer: THREE.WebGLRenderer;
@@ -64,6 +102,10 @@ interface StageRuntime {
   controls: OrbitControls;
   root: THREE.Group;
   grid: THREE.GridHelper;
+  imported: Map<string, ImportedRuntime>;
+  /** In-flight or resolved loads keyed by pinned asset id or source URL, so
+   * concurrent effect runs share one load and one set of GPU resources. */
+  assetCache: Map<string, Promise<LoadedStageAsset>>;
 }
 const vector = (value: THREE.Vector3): Vector3Value => ({
   x: value.x,
@@ -75,6 +117,7 @@ const titles: Record<StageObject["kind"], MessageKey> = {
   person: "editors.stage.ui.objectPerson",
   box: "editors.stage.ui.objectBox",
   sphere: "editors.stage.ui.objectSphere",
+  gltf: "editors.stage.ui.objectGltf",
 };
 function applyTransform(object: THREE.Object3D, value: StageTransform) {
   object.position.set(value.position.x, value.position.y, value.position.z);
@@ -84,6 +127,13 @@ function applyTransform(object: THREE.Object3D, value: StageTransform) {
 function buildObject(value: StageObject): THREE.Group {
   const group = new THREE.Group();
   group.userData.objectId = value.id;
+  group.userData.objectKind = value.kind;
+  if (value.kind === "gltf") {
+    group.userData.assetSource = value.source;
+    // The translucent box owns exclusive GPU resources, unlike loaded
+    // clones that share them with the cached scene.
+    group.userData.placeholder = true;
+  }
   const material = new THREE.MeshStandardMaterial({
     color: value.color,
     roughness: 0.58,
@@ -104,7 +154,11 @@ function buildObject(value: StageObject): THREE.Group {
   if (value.kind === "box") add(new THREE.BoxGeometry(1, 1, 1), 0, 0.5, 0);
   else if (value.kind === "sphere")
     add(new THREE.SphereGeometry(0.6, 32, 24), 0, 0.6, 0);
-  else {
+  else if (value.kind === "gltf") {
+    material.transparent = true;
+    material.opacity = 0.35;
+    add(new THREE.BoxGeometry(1, 1, 1), 0, 0.5, 0);
+  } else {
     const bone = (
       parent: THREE.Object3D,
       name: string,
@@ -148,6 +202,76 @@ function buildObject(value: StageObject): THREE.Group {
   }
   applyTransform(group, value);
   return group;
+}
+function cloneImportedAsset(
+  value: StageObject,
+  loaded: LoadedStageAsset,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.userData.objectId = value.id;
+  group.userData.objectKind = value.kind;
+  group.userData.assetSource = value.source;
+  group.add(cloneSkinnedObject(loaded.scene));
+  applyTransform(group, value);
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  return group;
+}
+async function loadStageAsset(source: string): Promise<LoadedStageAsset> {
+  const loaded = await new GLTFLoader().loadAsync(source);
+  return { scene: loaded.scene, animations: loaded.animations };
+}
+function createImportedRuntime(
+  group: THREE.Group,
+  clips: THREE.AnimationClip[],
+): ImportedRuntime {
+  const restPose: RestPose[] = [];
+  for (const child of group.children)
+    child.traverse((object) => {
+      restPose.push({
+        object,
+        position: object.position.clone(),
+        quaternion: object.quaternion.clone(),
+        scale: object.scale.clone(),
+      });
+    });
+  return {
+    root: group,
+    clips,
+    mixer: clips.length ? new THREE.AnimationMixer(group) : undefined,
+    restPose,
+  };
+}
+function applyImportedAnimation(
+  imported: Map<string, ImportedRuntime>,
+  value: StageSampleObject,
+) {
+  if (value.kind !== "gltf") return;
+  const binding = imported.get(value.id);
+  if (!binding?.mixer) return;
+  const clip = value.motion
+    ? selectStageAnimation(binding.clips, value.motion.preset)
+    : undefined;
+  if (binding.activeClip !== clip) {
+    binding.mixer.stopAllAction();
+    if (clip) binding.mixer.clipAction(clip).reset().play();
+    // Leaving a clip must return the skeleton to its authored rest pose;
+    // stopAllAction alone leaves bones at the last sampled pose.
+    else
+      for (const part of binding.restPose) {
+        part.object.position.copy(part.position);
+        part.object.quaternion.copy(part.quaternion);
+        part.object.scale.copy(part.scale);
+      }
+    binding.activeClip = clip;
+  }
+  binding.mixer.setTime(
+    clip && value.motion ? value.motionTime * value.motion.speed : 0,
+  );
 }
 function poseJoints(group: THREE.Object3D, value: StageSampleObject) {
   if (value.kind !== "person") return;
@@ -203,6 +327,7 @@ function displayPose(runtime: StageRuntime, pose: StageSample) {
     if (data) {
       applyTransform(child, data);
       poseJoints(child, data);
+      applyImportedAnimation(runtime.imported, data);
     }
   }
 }
@@ -266,6 +391,7 @@ export function DirectorStage({
   onClose,
   onRender,
   onPrepareRender,
+  isRegisteredAsset,
 }: DirectorStageProps) {
   const { t } = useI18n();
   const [historyState, setHistoryState] = useState(() =>
@@ -287,6 +413,32 @@ export function DirectorStage({
     [ready, setReady] = useState(false);
   const [inserted, setInserted] = useState(false);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
+  const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
+  const [assetNotice, setAssetNotice] = useState("");
+  /** Drawer draft over node.data.stills: pinned items plus unsaved captures,
+   * committed as a whole by the next apply. */
+  const [stills, setStills] = useState<StageStillItem[]>(
+    node.data.stills ?? [],
+  );
+  const [stillSaving, setStillSaving] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [selectedStills, setSelectedStills] = useState<Set<string>>(new Set());
+  const [previewStillId, setPreviewStillId] = useState<string | null>(null);
+  /** Last state a prepare or apply committed. The unsaved-close guard and
+   * the auto-poster rule must compare against this, not the mount-time
+   * node props, because prepares commit mid-session. */
+  const committedStills = useRef<StageStillItem[]>(node.data.stills ?? []);
+  const committedStage = useRef<LocalStageDocument | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  /** "storyboard" or a camera rig id; fixed when the dialog opens. */
+  const [exportSource, setExportSource] = useState("");
+  const [exportClarity, setExportClarity] = useState(1280);
+  const [exportFps, setExportFps] = useState(30);
+  const [renderedAt, setRenderedAt] = useState<{
+    width: number;
+    height: number;
+    fps: number;
+  } | null>(null);
   const renderPublisher = useRef<
     ((result: LinkedMediaResult) => boolean | Promise<boolean>) | null
   >(null);
@@ -298,6 +450,8 @@ export function DirectorStage({
     timeRef = useRef(time),
     playingRef = useRef(playing),
     importInput = useRef<HTMLInputElement>(null),
+    assetInput = useRef<HTMLInputElement>(null),
+    ownedAssetUrls = useRef(new Set<string>()),
     active = useRef(true);
   stageRef.current = stage;
   timeRef.current = time;
@@ -306,6 +460,7 @@ export function DirectorStage({
   const object = sampled.objects.find((item) => item.id === selected);
   const cameraValue = sampled.camera;
   const outputSize = stageOutputSize(stage.aspectRatio);
+  const exportSize = stageOutputSize(stage.aspectRatio, exportClarity);
   const frameTimes = stageFrameTimes(stage);
   const installHistory = (next: StageHistory) => {
     if (next === history.current) return;
@@ -317,6 +472,7 @@ export function DirectorStage({
     setRendered(null);
     setInserted(false);
     setError("");
+    setAssetNotice("");
   };
   const edit = (
     operation: (value: LocalStageDocument) => LocalStageDocument,
@@ -361,7 +517,16 @@ export function DirectorStage({
       });
   };
   const addMotionClip = () => {
-    if (!object) return;
+    if (
+      !object ||
+      (object.kind !== "person" &&
+        !(
+          object.kind === "gltf" &&
+          object.role === "character" &&
+          object.hasAnimation
+        ))
+    )
+      return;
     const start = timeRef.current;
     const next =
       object.motionClips.find((clip) => clip.start > start)?.start ??
@@ -512,7 +677,16 @@ export function DirectorStage({
     const fill = new THREE.DirectionalLight(0x8d88ff, 1.8);
     fill.position.set(-6, 5, -5);
     scene.add(fill);
-    const current = { renderer, scene, camera, controls, root, grid };
+    const current: StageRuntime = {
+      renderer,
+      scene,
+      camera,
+      controls,
+      root,
+      grid,
+      imported: new Map(),
+      assetCache: new Map(),
+    };
     runtime.current = current;
     setCamera(current, sampleStage(stageRef.current, timeRef.current).camera);
     const resize = () => {
@@ -614,6 +788,13 @@ export function DirectorStage({
       renderer.domElement.removeEventListener("pointerup", pointerUp);
       renderer.domElement.removeEventListener("webglcontextlost", contextLost);
       disposeObject(scene);
+      for (const pending of runtime.current?.assetCache.values() ?? [])
+        void pending.then(
+          (loaded) => disposeObject(loaded.scene),
+          () => undefined,
+        );
+      for (const url of ownedAssetUrls.current) URL.revokeObjectURL(url);
+      ownedAssetUrls.current.clear();
       light.shadow.dispose();
       renderer.dispose();
       renderer.domElement.remove();
@@ -624,12 +805,103 @@ export function DirectorStage({
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
+    const objects = new Map(stage.objects.map((item) => [item.id, item]));
     for (const child of [...current.root.children]) {
-      current.root.remove(child);
-      disposeObject(child);
+      const item = objects.get(child.userData.objectId as string);
+      const sourceChanged =
+        item?.kind === "gltf" &&
+        child.userData.assetSource !== item.source;
+      if (!item || child.userData.objectKind !== item.kind || sourceChanged) {
+        current.root.remove(child);
+        // Loaded imported clones share GPU resources with the cached scene;
+        // placeholders own theirs and must be disposed.
+        if (child.userData.objectKind !== "gltf" || child.userData.placeholder)
+          disposeObject(child);
+        current.imported.delete(child.userData.objectId as string);
+      }
     }
-    stage.objects.forEach((item) => current.root.add(buildObject(item)));
+    for (const item of stage.objects) {
+      const existing = current.root.children.find(
+        (child) => child.userData.objectId === item.id,
+      );
+      if (!existing) current.root.add(buildObject(item));
+      else if (item.kind !== "gltf")
+        existing.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const materials = Array.isArray(child.material)
+              ? child.material
+              : [child.material];
+            materials.forEach((material) => {
+              if (material instanceof THREE.MeshStandardMaterial)
+                material.color.set(item.color);
+            });
+          }
+        });
+    }
   }, [stage.objects, ready]);
+  useEffect(() => {
+    const current = runtime.current;
+    if (!current || !ready) return;
+    let cancelled = false;
+    const load = async () => {
+      for (const item of stage.objects) {
+        if (item.kind !== "gltf") continue;
+        if (!item.source) {
+          if (item.asset) setError(t("editors.stage.ui.assetUnavailable"));
+          continue;
+        }
+        const existing = current.root.children.find(
+          (child) => child.userData.objectId === item.id,
+        );
+        if (
+          existing?.userData.assetSource === item.source &&
+          current.imported.has(item.id)
+        )
+          continue;
+        try {
+          const cacheKey = item.asset?.assetId ?? item.source;
+          let pending = current.assetCache.get(cacheKey);
+          if (!pending) {
+            pending = loadStageAsset(item.source);
+            current.assetCache.set(cacheKey, pending);
+            // A failed load must not poison the cache; evict it so a later
+            // effect run can retry.
+            pending.catch(() => {
+              if (current.assetCache.get(cacheKey) === pending)
+                current.assetCache.delete(cacheKey);
+            });
+          }
+          const loaded = await pending;
+          if (cancelled || !active.current) return;
+          const previous = current.root.children.find(
+            (child) => child.userData.objectId === item.id,
+          );
+          if (previous) {
+            current.root.remove(previous);
+            if (previous.userData.placeholder) disposeObject(previous);
+          }
+          const group = cloneImportedAsset(item, loaded);
+          current.root.add(group);
+          current.imported.set(
+            item.id,
+            createImportedRuntime(group, loaded.animations),
+          );
+          if (item.role === "character" && !loaded.animations.length)
+            setAssetNotice(t("editors.stage.ui.assetNotice"));
+          displayPose(current, sampleStage(stageRef.current, timeRef.current));
+        } catch {
+          if (!cancelled && active.current)
+            setError(
+              t("editors.stage.ui.assetLoadFailed", { name: item.name }),
+            );
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [stage.objects, ready, t]);
   useEffect(() => {
     const current = runtime.current;
     if (!current) return;
@@ -723,12 +995,175 @@ export function DirectorStage({
   };
   const captureKeyframe = () =>
     edit((current) => captureStageFrame(current, timeRef.current));
-  const screenshot = () => {
+  /** Same sampler and output frame as the MP4 render, at the encoder aspect. */
+  const captureOutputStill = () => {
     const current = runtime.current;
     if (!current) throw new Error(t("editors.stage.ui.rendererNotReady"));
-    displayPose(current, sampleStage(stageRef.current, timeRef.current));
-    current.renderer.render(current.scene, current.camera);
-    return current.renderer.domElement.toDataURL("image/png");
+    const size = stageOutputSize(stageRef.current.aspectRatio);
+    const dom = current.renderer.domElement;
+    // setSize() takes CSS units while the drawing buffer multiplies by the
+    // pixel ratio; save CSS units and pin the ratio to 1 so the still is
+    // captured at exactly the encoder resolution on high-DPI displays.
+    const previous = current.renderer.getSize(new THREE.Vector2());
+    const ratio = current.renderer.getPixelRatio();
+    const aspect = current.camera.aspect;
+    current.renderer.setPixelRatio(1);
+    current.renderer.setSize(size.width, size.height, false);
+    current.camera.aspect = size.width / size.height;
+    current.camera.updateProjectionMatrix();
+    try {
+      displayPose(current, sampleStage(stageRef.current, timeRef.current));
+      current.renderer.render(current.scene, current.camera);
+      return dom.toDataURL("image/png");
+    } finally {
+      current.renderer.setPixelRatio(ratio);
+      current.renderer.setSize(previous.x, previous.y, false);
+      current.camera.aspect = aspect;
+      current.camera.updateProjectionMatrix();
+      current.renderer.render(current.scene, current.camera);
+    }
+  };
+  /** Captures at the encoder resolution through the shared sampler. The
+   * saving state stays visible for the whole render-and-read pass so the
+   * shoot button can honestly report in-flight work. */
+  const captureStill = async () => {
+    if (stillSaving) return;
+    setStillSaving(true);
+    try {
+      // Yield two painted frames so the saving label actually shows before
+      // the synchronous render-and-read pass blocks the main thread.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+      if (!active.current) return;
+      const capture = captureOutputStill();
+      setStills((current) => [...current, { id: crypto.randomUUID(), capture }]);
+      setAssetNotice(t("editors.stage.ui.stillCaptured"));
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : t("editors.stage.ui.screenshotFailed"),
+      );
+    } finally {
+      setStillSaving(false);
+    }
+  };
+  const stillName = (index: number) =>
+    t("editors.stage.ui.stillName", {
+      number: String(index + 1).padStart(2, "0"),
+    });
+  const selectedStillItems = stills.filter((item) =>
+    selectedStills.has(item.id),
+  );
+  const toggleStill = (id: string) =>
+    setSelectedStills((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const deleteSelectedStills = () => {
+    setStills((current) =>
+      current.filter((item) => !selectedStills.has(item.id)),
+    );
+    setPreviewStillId((id) => (id && selectedStills.has(id) ? null : id));
+    setSelectedStills(new Set());
+  };
+  const downloadSelectedStills = async () => {
+    for (const item of selectedStillItems) {
+      const name = `${stillName(stills.indexOf(item))}.png`;
+      try {
+        if (item.capture) download(item.capture, name, "image/png");
+        // Pinned items resolve their bytes from the view-only media URL.
+        else if (item.src)
+          downloadFile(await (await fetch(item.src)).blob(), name);
+      } catch {
+        setError(t("editors.stage.ui.stillDownloadFailed"));
+      }
+    }
+  };
+  const addSelectedStillsToCanvas = async () => {
+    let added = 0;
+    try {
+      // Publishing needs a committed source: always prepare fresh (save the
+      // stage and stills draft, establish the linked publication). Reusing an
+      // MP4-era publication would freeze a document without captures made
+      // since that render, and the fingerprint gate rejects those stills.
+      const publisher = onPrepareRender
+        ? await onPrepareRender(
+            parseLocalStageValue(stageRef.current, t),
+            stills,
+          )
+        : onRender;
+      // What just committed is the new baseline for the close guard and the
+      // auto-poster rule. Do not advance it when preparation failed.
+      committedStills.current = stills;
+      committedStage.current = stageRef.current;
+      for (const item of selectedStillItems) {
+        try {
+          const src = item.capture
+            ? item.capture
+            : item.src
+              ? await mediaBlobDataUrl(
+                  await (await fetch(item.src)).blob(),
+                  AbortSignal.timeout(30_000),
+                )
+              : undefined;
+          if (!src) continue;
+          // One publish per still keeps each image an independent canvas
+          // node the user can place and edit on its own.
+          if (
+            await publisher({
+              kind: "image",
+              src,
+              mimeType: "image/png",
+              title: `${node.data.title} · ${stillName(stills.indexOf(item))}`,
+              media: { width: outputSize.width, height: outputSize.height },
+            })
+          )
+            added += 1;
+        } catch (reason) {
+          // A failed publish must not block the remaining stills, but the
+          // reason stays visible instead of disappearing silently.
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : t("editors.stage.ui.addCanvasFailed"),
+          );
+        }
+      }
+      setAssetNotice(
+        t("editors.stage.ui.stillsAddedToCanvas", { count: added }),
+      );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : t("editors.stage.ui.addCanvasFailed"),
+      );
+    }
+  };
+  const previewStill =
+    stills.find((item) => item.id === previewStillId) ?? null;
+  const openExport = () => {
+    // Storyboard is the default exactly when an edit list exists; otherwise
+    // the active rig leads the per-camera options.
+    setExportSource(
+      stageRef.current.shots.length
+        ? "storyboard"
+        : stageRef.current.activeCameraId,
+    );
+    setExportOpen(true);
+  };
+  /** mm:ss.d clock matching the export dialog of the reference console.
+   * Arithmetic on total tenths so a rounded 59.96s renders 01:00.0, never
+   * 00:60.0. */
+  const formatClock = (seconds: number) => {
+    const tenths = Math.max(0, Math.round(seconds * 10));
+    const minutes = Math.floor(tenths / 600);
+    const rest = tenths - minutes * 600;
+    return `${String(minutes).padStart(2, "0")}:${String(Math.floor(rest / 10)).padStart(2, "0")}.${rest % 10}`;
   };
   const download = (content: string, name: string, mime: string) => {
     downloadFile(
@@ -738,24 +1173,18 @@ export function DirectorStage({
       name,
     );
   };
-  const snapshot = () => {
-    try {
-      download(
-        screenshot(),
-        `${node.data.title || "director-stage"}.png`,
-        "image/png",
-      );
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : t("editors.stage.ui.screenshotFailed"),
-      );
-    }
-  };
   const importStage = async (file: File) => {
     try {
       const next = parseLocalStageValue(JSON.parse(await file.text()), t);
+      const foreign = isRegisteredAsset
+        ? unregisteredStageAssets(next, isRegisteredAsset)
+        : [];
+      if (foreign.length)
+        throw new Error(
+          t("editors.stage.ui.importForeignAssets", {
+            names: foreign.map((object) => object.name).join(", "),
+          }),
+        );
       if (active.current) {
         edit(() => next);
         setTime(0);
@@ -770,45 +1199,186 @@ export function DirectorStage({
         );
     }
   };
+  const importAsset = async (file: File) => {
+    const lowerName = file.name.toLowerCase();
+    let source: string | undefined;
+    try {
+      if (!lowerName.endsWith(".glb") && !lowerName.endsWith(".gltf"))
+        throw new Error(t("editors.stage.ui.assetUnsupported"));
+      if (file.size > STAGE_ASSET_MAX_BYTES)
+        throw new Error(
+          t("editors.stage.ui.assetTooLarge", {
+            name: file.name,
+            size: STAGE_ASSET_MAX_BYTES / 1024 / 1024,
+          }),
+        );
+      const probed = probeStageAsset(await file.arrayBuffer());
+      if (probed === "corrupt")
+        throw new Error(t("editors.stage.ui.assetCorrupt", { name: file.name }));
+      if (!probed)
+        throw new Error(
+          t("editors.stage.ui.assetLoadFailed", { name: file.name }),
+        );
+      if (probed.external)
+        throw new Error(t("editors.stage.ui.assetUnsupported"));
+      const url = URL.createObjectURL(file);
+      source = url;
+      ownedAssetUrls.current.add(url);
+      let loaded: LoadedStageAsset;
+      try {
+        // Seed the shared cache so the effect run that follows this edit
+        // reuses this load instead of parsing the same blob twice.
+        const current = runtime.current;
+        const pending = loadStageAsset(url);
+        if (current) {
+          current.assetCache.set(url, pending);
+          pending.catch(() => {
+            if (current.assetCache.get(url) === pending)
+              current.assetCache.delete(url);
+          });
+        }
+        loaded = await pending;
+      } catch (reason) {
+        console.debug("stage asset import failed", reason);
+        throw new Error(
+          t("editors.stage.ui.assetLoadFailed", { name: file.name }),
+        );
+      }
+      const id = crypto.randomUUID();
+      const name = file.name.replace(/\.(?:glb|gltf)$/i, "") || file.name;
+      edit((current) => ({
+        ...current,
+        objects: [
+          ...current.objects,
+          {
+            id,
+            kind: "gltf",
+            name,
+            color: "#b8c5ff",
+            role: assetRole,
+            format: probed.format,
+            source,
+            animationNames: loaded.animations.map(
+              // Fallback must match the backend probe's animation_{index}.
+              (clip, index) => clip.name.trim() || `animation_${index}`,
+            ),
+            hasAnimation: loaded.animations.length > 0,
+            position: { x: current.objects.length * 1.3, y: 0, z: 0 },
+            rotation: { x: 0, y: 0, z: 0 },
+            scale: { x: 1, y: 1, z: 1 },
+            keyframes: [],
+            motionClips: [],
+          },
+        ],
+      }));
+      setSelected(id);
+      setAssetNotice(
+        loaded.animations.length
+          ? t("editors.stage.ui.assetImported", {
+              name,
+              animationCount: loaded.animations.length,
+            })
+          : t("editors.stage.ui.assetImportedStatic", { name }),
+      );
+    } catch (reason) {
+      if (source) {
+        URL.revokeObjectURL(source);
+        ownedAssetUrls.current.delete(source);
+      }
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : t("editors.stage.ui.assetLoadFailed", { name: file.name }),
+      );
+    }
+  };
 
-  const renderVideo = async () => {
+  const renderVideo = async (
+    source: string,
+    clarity: number,
+    fps: number,
+  ) => {
     if (!runtime.current) return;
+    const previewRuntime = runtime.current;
     const controller = new AbortController();
     exporting.current?.abort();
     exporting.current = controller;
-    const snapshot = parseLocalStageValue(stageRef.current, t);
+    const exportStage = parseLocalStageValue(stageRef.current, t);
+    // The dialog's source choice fixes the camera plan without touching the
+    // draft: storyboard mode concatenates the shot list into the exported
+    // timeline, a camera rig plays through document time.
+    const plan = stageExportPlan(exportStage, source, t);
+    const size = stageOutputSize(exportStage.aspectRatio, clarity);
+    const directorPlan = {
+      cameraSource: source === "storyboard" ? "storyboard" : "camera",
+      ...(source === "storyboard" ? {} : { cameraId: source }),
+      width: size.width,
+      height: size.height,
+      durationSeconds: plan.duration,
+      frameRate: fps,
+    } satisfies DirectorOutputPlanInput;
     setPlaying(false);
     setError("");
     setRendered(null);
     setInserted(false);
     setRenderProgress(0);
-    const scene = runtime.current.scene.clone(true);
-    const root = scene.getObjectByName("stage-objects")!;
+    let scene: THREE.Scene | undefined;
     const materials = new Map<THREE.Material, THREE.Material>();
-    scene.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      const clone = (source: THREE.Material) => {
-        let material = materials.get(source);
-        if (!material) {
-          material = source.clone();
-          if (material instanceof THREE.MeshStandardMaterial)
-            material.emissive.set("#000000");
-          materials.set(source, material);
-        }
-        return material;
-      };
-      child.material = Array.isArray(child.material)
-        ? child.material.map(clone)
-        : clone(child.material);
-    });
     let renderer: THREE.WebGLRenderer | undefined;
     try {
+      // The render's publication freezes the stage AND the stills draft:
+      // captures made before this render are pinned with it, and the
+      // committed baselines advance so the close guard stops nagging.
       renderPublisher.current = onPrepareRender
-        ? await onPrepareRender(snapshot)
+        ? await onPrepareRender(exportStage, stills, directorPlan)
         : onRender;
+      committedStills.current = stills;
+      committedStage.current = exportStage;
       controller.signal.throwIfAborted();
+      // Snapshot the scene only after preparation: a model whose preview
+      // load lands while preparing would otherwise export as its placeholder.
+      scene = previewRuntime.scene.clone(true);
+      const root = scene.getObjectByName("stage-objects")!;
+      const renderImported = new Map<string, ImportedRuntime>();
+      for (const [id, binding] of previewRuntime.imported) {
+        const item = exportStage.objects.find((object) => object.id === id);
+        const cloned = root.children.find(
+          (child) => child.userData.objectId === id,
+        );
+        // Clone from the pristine cached scene, not the posed runtime clone,
+        // so frames outside motion clips render the authored rest pose.
+        const cached = previewRuntime.assetCache.get(
+          item?.asset?.assetId ?? item?.source ?? "",
+        );
+        const source =
+          (cached ? await cached.catch(() => undefined) : undefined)?.scene ??
+          binding.root.children[0];
+        if (!item || !cloned || !source) continue;
+        const replacement = cloneImportedAsset(item, {
+          scene: source,
+          animations: binding.clips,
+        });
+        root.remove(cloned);
+        root.add(replacement);
+        renderImported.set(id, createImportedRuntime(replacement, binding.clips));
+      }
+      scene.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const clone = (source: THREE.Material) => {
+          let material = materials.get(source);
+          if (!material) {
+            material = source.clone();
+            if (material instanceof THREE.MeshStandardMaterial)
+              material.emissive.set("#000000");
+            materials.set(source, material);
+          }
+          return material;
+        };
+        child.material = Array.isArray(child.material)
+          ? child.material.map(clone)
+          : clone(child.material);
+      });
       renderer = new THREE.WebGLRenderer({ antialias: true });
-      const size = stageOutputSize(snapshot.aspectRatio);
       renderer.setSize(size.width, size.height);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.shadowMap.enabled = true;
@@ -820,12 +1390,12 @@ export function DirectorStage({
       );
       const blob = await encodeMp4({
         canvas: renderer.domElement,
-        duration: snapshot.duration,
-        fps: 30,
+        duration: plan.duration,
+        fps,
         signal: controller.signal,
         progress: setRenderProgress,
         draw: (at) => {
-          const pose = sampleStage(snapshot, at);
+          const pose = sampleStage(plan.stage, plan.timeAt(at));
           camera.position.set(
             pose.camera.position.x,
             pose.camera.position.y,
@@ -845,12 +1415,16 @@ export function DirectorStage({
             if (object) {
               applyTransform(child, object);
               poseJoints(child, object);
+              applyImportedAnimation(renderImported, object);
             }
           }
-          renderer!.render(scene, camera);
+          renderer!.render(scene!, camera);
         },
       });
-      if (active.current && !controller.signal.aborted) setRendered(blob);
+      if (active.current && !controller.signal.aborted) {
+        setRendered(blob);
+        setRenderedAt({ width: size.width, height: size.height, fps });
+      }
     } catch (reason) {
       if (active.current && !controller.signal.aborted)
         setError(
@@ -860,7 +1434,7 @@ export function DirectorStage({
         );
     } finally {
       // Geometry stays shared with the preview; cloned materials, renderer and shadows are export-owned.
-      scene.traverse((child) => {
+      scene?.traverse((child) => {
         if (child instanceof THREE.DirectionalLight) child.shadow.dispose();
       });
       materials.forEach((material) => material.dispose());
@@ -918,7 +1492,17 @@ export function DirectorStage({
         commit.apply(() =>
           onApply(
             parseLocalStageValue(stageRef.current, t),
-            runtime.current ? screenshot() : undefined,
+            // The drawer draft is the source of truth: captures, deletions
+            // and pinned items all commit as one list. A fresh stage with no
+            // history of stills pins a poster so the canvas keeps a preview.
+            // The baseline is the last committed state, not the mount-time
+            // node props, so a mid-session prepare does not resurrect a
+            // deleted drawer.
+            stills.length || committedStills.current.length
+              ? stills
+              : runtime.current
+                ? [{ id: crypto.randomUUID(), capture: captureOutputStill() }]
+                : stills,
           ),
         )
       }
@@ -945,22 +1529,56 @@ export function DirectorStage({
             {t("editors.stage.ui.importJson")}
           </button>
           <button
-            onClick={() =>
+            onClick={() => {
+              // Exports carry no model bytes: an import that exists only as a
+              // browser URL would become an unopenable object, so name it.
+              const unsaved = stageRef.current.objects.filter(
+                (object) => object.kind === "gltf" && !object.asset,
+              );
+              if (unsaved.length) {
+                setError(
+                  t("editors.stage.ui.exportUnsavedImports", {
+                    names: unsaved.map((object) => object.name).join(", "),
+                  }),
+                );
+                return;
+              }
               download(
-                JSON.stringify(stageRef.current, null, 2),
+                JSON.stringify(
+                  {
+                    ...stageRef.current,
+                    objects: stageRef.current.objects.map(
+                      ({ source: _source, ...object }) => object,
+                    ),
+                  },
+                  null,
+                  2,
+                ),
                 `${node.data.title || "director-stage"}.stage.json`,
                 "application/json",
-              )
-            }
+              );
+            }}
           >
             {t("editors.stage.ui.exportJson")}
           </button>
-          <button disabled={!ready} onClick={snapshot}>
-            {t("editors.stage.ui.screenshot")}
+          <button
+            disabled={!ready || stillSaving}
+            onClick={() => void captureStill()}
+          >
+            {stillSaving
+              ? t("editors.stage.ui.stillSaving")
+              : t("editors.stage.ui.screenshot")}
+          </button>
+          <button
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen((open) => !open)}
+          >
+            {t("editors.stage.ui.shotMaterials")}
+            {stills.length ? ` (${stills.length})` : ""}
           </button>
           <button
             disabled={!ready || renderProgress !== null}
-            onClick={() => void renderVideo()}
+            onClick={openExport}
           >
             {t("editors.stage.ui.renderMp4")}
           </button>
@@ -985,8 +1603,9 @@ export function DirectorStage({
           <div className="cw-render-status" role="status">
             <span>
               {t("editors.stage.ui.renderDone", {
-                width: outputSize.width,
-                height: outputSize.height,
+                width: renderedAt?.width ?? outputSize.width,
+                height: renderedAt?.height ?? outputSize.height,
+                fps: renderedAt?.fps ?? 30,
               })}
             </span>
             <button
@@ -1020,10 +1639,34 @@ export function DirectorStage({
               <div className="cw-stage-add">
                 {(["person", "box", "sphere"] as const).map((kind) => (
                   <button key={kind} onClick={() => addObject(kind)}>
-                    + {titles[kind]}
+                    + {t(titles[kind])}
                   </button>
                 ))}
               </div>
+              <label className="cw-domain-field">
+                {t("editors.stage.ui.assetRole")}
+                <select
+                  value={assetRole}
+                  onChange={(event) =>
+                    setAssetRole(event.target.value as StageAssetRole)
+                  }
+                >
+                  <option value="character">
+                    {t("editors.stage.ui.assetCharacter")}
+                  </option>
+                  <option value="scene">
+                    {t("editors.stage.ui.assetScene")}
+                  </option>
+                </select>
+              </label>
+              <button onClick={() => assetInput.current?.click()}>
+                + {t("editors.stage.ui.importAsset")}
+              </button>
+              {assetNotice && (
+                <p className="cw-domain-note" role="status">
+                  {assetNotice}
+                </p>
+              )}
               <div className="cw-stage-object-list">
                 {stage.objects.map((item) => (
                   <button
@@ -1079,6 +1722,111 @@ export function DirectorStage({
                 role="img"
                 aria-label={t("editors.stage.ui.stageAria")}
               />
+              {drawerOpen && (
+                <section
+                  className="cw-stage-drawer"
+                  aria-label={t("editors.stage.ui.shotMaterials")}
+                >
+                  <header className="cw-stage-drawer-head">
+                    <h4>{t("editors.stage.ui.shotMaterials")}</h4>
+                    <span className="cw-stage-drawer-count">{stills.length}</span>
+                    <button
+                      aria-label={t("editors.stage.ui.closeDrawer")}
+                      onClick={() => setDrawerOpen(false)}
+                    >
+                      ×
+                    </button>
+                  </header>
+                  <div className="cw-stage-drawer-toolbar">
+                    <label>
+                      <input
+                        type="checkbox"
+                        disabled={!stills.length}
+                        checked={
+                          !!stills.length &&
+                          selectedStills.size === stills.length
+                        }
+                        onChange={(event) =>
+                          setSelectedStills(
+                            event.target.checked
+                              ? new Set(stills.map((item) => item.id))
+                              : new Set(),
+                          )
+                        }
+                      />
+                      {t("editors.stage.ui.selectAllStills")}
+                    </label>
+                    <span>
+                      {t("editors.stage.ui.selectedStillsCount", {
+                        count: selectedStills.size,
+                      })}
+                    </span>
+                  </div>
+                  <ul className="cw-stage-drawer-list">
+                    {stills.map((item, index) => {
+                      const src = item.capture ?? item.src;
+                      return (
+                        <li key={item.id}>
+                          <div className="cw-stage-drawer-item">
+                            <input
+                              type="checkbox"
+                              checked={selectedStills.has(item.id)}
+                              onChange={() => toggleStill(item.id)}
+                              aria-label={stillName(index)}
+                            />
+                            <button
+                              className="cw-stage-drawer-preview"
+                              onClick={() => setPreviewStillId(item.id)}
+                              disabled={!src}
+                              aria-label={t("editors.stage.ui.previewStill", {
+                                name: stillName(index),
+                              })}
+                            >
+                              {src ? (
+                                <img src={src} alt="" />
+                              ) : (
+                                <span className="cw-stage-drawer-missing">
+                                  {t("editors.stage.ui.stillMissing")}
+                                </span>
+                              )}
+                              <span className="cw-stage-drawer-caption">
+                                <span>{stillName(index)}</span>
+                                <span>{stage.aspectRatio}</span>
+                              </span>
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                    {!stills.length && (
+                      <li className="cw-stage-drawer-empty">
+                        {t("editors.stage.ui.stillEmpty")}
+                      </li>
+                    )}
+                  </ul>
+                  <footer className="cw-stage-drawer-actions">
+                    <button
+                      disabled={!selectedStills.size}
+                      onClick={deleteSelectedStills}
+                    >
+                      {t("editors.stage.ui.deleteSelectedStills")}
+                    </button>
+                    <button
+                      disabled={!selectedStills.size}
+                      onClick={() => void downloadSelectedStills()}
+                    >
+                      {t("editors.stage.ui.downloadSelectedStills")}
+                    </button>
+                    <button
+                      className="cw-stage-drawer-primary"
+                      disabled={!selectedStills.size}
+                      onClick={() => void addSelectedStillsToCanvas()}
+                    >
+                      {t("editors.stage.ui.addStillsToCanvas")}
+                    </button>
+                  </footer>
+                </section>
+              )}
               <div className="cw-stage-transport">
                 <button
                   disabled={!ready}
@@ -1266,17 +2014,38 @@ export function DirectorStage({
                       }
                     />
                   </label>
-                  <label className="cw-domain-field">
-                    {t("editors.stage.ui.material")}
-                    <input
-                      type="color"
-                      value={object.color}
-                      onChange={(event) =>
-                        editObject({ color: event.target.value })
-                      }
-                    />
-                  </label>
-                  {object.kind === "person" && (
+                  {object.kind !== "gltf" && (
+                    <label className="cw-domain-field">
+                      {t("editors.stage.ui.material")}
+                      <input
+                        type="color"
+                        value={object.color}
+                        onChange={(event) =>
+                          editObject({ color: event.target.value })
+                        }
+                      />
+                    </label>
+                  )}
+                  {object.kind === "gltf" && (
+                    <p className="cw-domain-note" role="status">
+                      {object.role === "character"
+                        ? t("editors.stage.ui.assetCharacter")
+                        : t("editors.stage.ui.assetScene")}
+                      {" · "}
+                      {object.hasAnimation
+                        ? t("editors.stage.ui.assetImported", {
+                            name: object.name,
+                            animationCount: object.animationNames?.length ?? 0,
+                          })
+                        : t("editors.stage.ui.assetImportedStatic", {
+                            name: object.name,
+                          })}
+                    </p>
+                  )}
+                  {(object.kind === "person" ||
+                    (object.kind === "gltf" &&
+                      object.role === "character" &&
+                      object.hasAnimation)) && (
                     <section className="cw-stage-clips">
                       <h3>{t("editors.stage.ui.motionClips")}</h3>
                       <button onClick={addMotionClip}>
@@ -1607,7 +2376,192 @@ export function DirectorStage({
               event.target.value = "";
             }}
           />
+          <input
+            className="cw-domain-file-input"
+            ref={assetInput}
+            type="file"
+            accept=".glb,.gltf,model/gltf-binary,model/gltf+json"
+            aria-label={t("editors.stage.ui.importAsset")}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void importAsset(file);
+              event.target.value = "";
+            }}
+          />
         </fieldset>
+        {exportOpen && (
+          <div
+            className="cw-stage-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("editors.stage.ui.exportVideo")}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                // Child dialogs own their Escape; letting it bubble would
+                // close (or guard-close) the whole stage editor.
+                event.stopPropagation();
+                event.preventDefault();
+                setExportOpen(false);
+              }
+            }}
+          >
+            <form
+              className="cw-stage-export"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setExportOpen(false);
+                void renderVideo(exportSource, exportClarity, exportFps);
+              }}
+            >
+              <header className="cw-stage-export-head">
+                <h4>{t("editors.stage.ui.exportVideo")}</h4>
+                <button
+                  type="button"
+                  aria-label={t("editors.stage.ui.exportCancel")}
+                  onClick={() => setExportOpen(false)}
+                >
+                  ×
+                </button>
+              </header>
+              <p className="cw-domain-note">
+                {t("editors.stage.ui.exportSubtitle")}
+              </p>
+              <label className="cw-stage-export-field">
+                {t("editors.stage.ui.exportSourceLabel")}
+                <select
+                  autoFocus
+                  value={exportSource}
+                  onChange={(event) => setExportSource(event.target.value)}
+                >
+                  {stage.shots.length ? (
+                    <option value="storyboard">
+                      {t("editors.stage.ui.exportSourceStoryboard")}
+                    </option>
+                  ) : null}
+                  {stage.cameras.map((camera) => (
+                    <option key={camera.id} value={camera.id}>
+                      {camera.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="cw-stage-export-grid">
+                <span>
+                  {t("editors.stage.ui.exportAspectLabel")}:{" "}
+                  {stage.aspectRatio} · {exportSize.width} × {exportSize.height}
+                </span>
+                <span>
+                  {t("editors.stage.ui.exportDurationLabel")}:{" "}
+                  {formatClock(
+                    exportSource === "storyboard"
+                      ? stage.shots.reduce(
+                          (total, shot) => total + shot.duration,
+                          0,
+                        )
+                      : stage.duration,
+                  )}
+                </span>
+              </div>
+              <label className="cw-stage-export-field">
+                {t("editors.stage.ui.exportClarityLabel")}
+                <select
+                  value={exportClarity}
+                  onChange={(event) =>
+                    setExportClarity(Number(event.target.value))
+                  }
+                >
+                  <option value={1280}>
+                    {t("editors.stage.ui.exportClarityStandard")}
+                  </option>
+                  <option value={1920}>
+                    {t("editors.stage.ui.exportClarityHigh")}
+                  </option>
+                </select>
+              </label>
+              <label className="cw-stage-export-field">
+                {t("editors.stage.ui.exportFpsLabel")}
+                <select
+                  value={exportFps}
+                  onChange={(event) =>
+                    setExportFps(Number(event.target.value))
+                  }
+                >
+                  {[24, 25, 30, 50, 60].map((fps) => (
+                    <option
+                      key={fps}
+                      value={fps}
+                    >
+                      {t("editors.stage.ui.exportFpsOption", { fps })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="cw-domain-note">
+                {exportSource === "storyboard"
+                  ? t("editors.stage.ui.exportNoteStoryboard")
+                  : t("editors.stage.ui.exportNoteCamera", {
+                      name:
+                        stage.cameras.find(
+                          (camera) => camera.id === exportSource,
+                        )?.name ?? "",
+                    })}
+                <br />
+                {t("editors.stage.ui.exportNoteClean")}
+              </p>
+              <footer className="cw-stage-export-actions">
+                <button type="button" onClick={() => setExportOpen(false)}>
+                  {t("editors.stage.ui.exportCancel")}
+                </button>
+                <button
+                  type="submit"
+                  className="cw-stage-drawer-primary"
+                  disabled={
+                    !exportSource ||
+                    (exportSource === "storyboard" && !stage.shots.length)
+                  }
+                >
+                  {t("editors.stage.ui.exportConfirm")}
+                </button>
+              </footer>
+            </form>
+          </div>
+        )}
+        {previewStill && (
+          <div
+            className="cw-stage-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label={stillName(stills.indexOf(previewStill))}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                // Child dialogs own their Escape; letting it bubble would
+                // close (or guard-close) the whole stage editor.
+                event.stopPropagation();
+                event.preventDefault();
+                setPreviewStillId(null);
+              }
+            }}
+          >
+            <figure>
+              <img
+                src={previewStill.capture ?? previewStill.src}
+                alt={stillName(stills.indexOf(previewStill))}
+              />
+              <figcaption>
+                <span>
+                  {stillName(stills.indexOf(previewStill))} ·{" "}
+                  {stage.aspectRatio}
+                </span>
+                <button
+                  autoFocus
+                  onClick={() => setPreviewStillId(null)}
+                >
+                  {t("editors.stage.ui.closePreview")}
+                </button>
+              </figcaption>
+            </figure>
+          </div>
+        )}
       </div>
     </EditorModal>
   );

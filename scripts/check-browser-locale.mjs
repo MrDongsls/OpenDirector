@@ -6,7 +6,8 @@
  * follows the browser language while no preference is stored. A script that
  * asserts localized text without pinning `locale` therefore passes on one
  * machine and times out on another (issue #160). Every page states its
- * language — through `newPage({ locale })` or through a stored
+ * language — through `newPage({ locale })` (including a validated environment-
+ * backed local variable) or through a stored
  * `opendirector.locale.v1` preference that the app applies before first
  * paint — and that language must match the selectors the script asserts.
  *
@@ -78,6 +79,14 @@ function newPageCalls(text) {
   }
 }
 
+/** Return the fallback locale for a local variable backed by the suite env. */
+function environmentLocale(text, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*process\\.env\\.DIRECTOR_STAGE_LOCALE\\s*\\?\\?\\s*["']([^"']+)["']`,
+  ).exec(text)?.[1];
+}
+
 const names = (await readdir(browserDir)).filter((name) => name.endsWith(".mjs"));
 const files = [...names.map((name) => join(browserDir, name)), ...extraScripts];
 const problems = [];
@@ -99,7 +108,12 @@ for (const file of files) {
   const expected = assertsChinese ? "zh-CN" : "en-US";
   for (const call of calls) {
     checked += 1;
-    const found = /locale:\s*"([^"]+)"/.exec(call.args)?.[1];
+    const literal = /locale:\s*["']([^"']+)["']/.exec(call.args)?.[1];
+    const variable =
+      /locale:\s*([A-Za-z_$][\w$]*)/.exec(call.args)?.[1] ??
+      (/\blocale\s*[,}]/.test(call.args) ? "locale" : undefined);
+    const found =
+      literal ?? (variable ? environmentLocale(text, variable) : undefined);
     if (!found) {
       if (storesLocale) continue;
       problems.push(

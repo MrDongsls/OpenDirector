@@ -200,6 +200,13 @@
       "lanes": ["extended", "production"]
     },
     {
+      "file": "director_stage_delivery.mjs",
+      "lanes": [
+        "manual"
+      ],
+      "note": "A definitively refused editor delivery must not replay forever: the Director Stage recovers on the next attempt."
+    },
+    {
       "file": "double_shift_chat.mjs",
       "previewSafe": true,
       "lanes": [

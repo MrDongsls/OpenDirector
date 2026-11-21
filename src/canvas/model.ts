@@ -192,6 +192,17 @@ export interface ExternalData {
   current?: { versionId: string };
 }
 
+/** One captured stage still. A saved item pins the registered project asset
+ * and reconstructs its preview from a view-only media URL; an unsaved item
+ * carries capture bytes the next save imports. */
+export interface StageStillItem {
+  /** Drawer-local identity used to select, preview, and publish one capture. */
+  id: string;
+  asset?: AssetRef;
+  src?: string;
+  capture?: string;
+}
+
 export interface AgentNodeSettings {
   modelConfigId?: string;
   thinking: "auto" | "low" | "medium" | "high";
@@ -230,6 +241,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
     inputFingerprint?: string;
     editorDocumentId?: string;
     editorRevision?: number;
+    /** Derived at projection from the director execution document; drives presentation filtering. */
+    stagePreview?: boolean;
   };
   settings?: GenerationSettings;
   agentSettings?: AgentNodeSettings;
@@ -242,6 +255,10 @@ export interface CanvasNodeData extends Record<string, unknown> {
   layers?: LayerDocument;
   imageCrop?: import("./imageCrop.ts").ImageCropState;
   localStage?: LocalStageDocument;
+  /** Captured stage stills, oldest first. Pinned items carry the registered
+   * project asset and a view-only media URL; fresh captures carry dataURL
+   * bytes that the next save imports and registers as project assets. */
+  stills?: StageStillItem[];
   taskDraft?: CanvasToolTask;
   media?: { width?: number; height?: number; durationSeconds?: number };
 }

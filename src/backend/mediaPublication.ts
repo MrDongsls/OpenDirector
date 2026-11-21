@@ -1,5 +1,6 @@
 import type {
   CanvasPublishMediaInput,
+  DirectorOutputPlanInput,
   EditorDocument,
   ProjectSnapshot,
   MediaEditData,
@@ -75,7 +76,11 @@ export class MediaPublication {
       /* The open session still owns its original delivery. */
     }
   }
-  async publish(outputs: readonly LinkedMediaResult[], task?: CanvasToolTask) {
+  async publish(
+    outputs: readonly LinkedMediaResult[],
+    task?: CanvasToolTask,
+    directorPlan?: DirectorOutputPlanInput,
+  ) {
     if (this.active) throw Error(tNow("errors.backend.savingResult"));
     this.active = true;
     try {
@@ -85,6 +90,7 @@ export class MediaPublication {
           tool: task?.tool,
           parameters: task?.parameters,
           selection: task?.selection,
+          directorPlan,
         }),
       );
       const key = [
@@ -217,6 +223,7 @@ export class MediaPublication {
             source: source ? assetReference(source) : null,
             ...(sourceEditorId ? { sourceEditorId } : {}),
             document,
+            ...(directorPlan ? { directorPlan } : {}),
             outputs: published,
           },
         };

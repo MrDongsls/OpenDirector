@@ -12,9 +12,15 @@ import {
   captureStageFrame,
   removeStageFrame,
   stageOutputSize,
+  stageExportPlan,
   STAGE_RATIOS,
 } from "../src/canvas/stageDocument.ts";
-import { sampleJointPose } from "../src/canvas/stageMotion.ts";
+import {
+  sampleJointPose,
+  selectStageAnimation,
+  STAGE_ANIMATION_HINTS,
+  STAGE_MOTIONS,
+} from "../src/canvas/stageMotion.ts";
 import {
   createStageHistory,
   commitStageHistory,
@@ -381,7 +387,9 @@ test("supported preview and output frames have one exact aspect with even encode
   for (const ratio of STAGE_RATIOS) {
     const { width, height } = stageOutputSize(ratio),
       [w, h] = ratio.split(":").map(Number);
-    assert.equal(width / height, w! / h!);
+    // Even encoder dimensions cannot express every ratio exactly
+    // (2.39:1 lands on 1280x536); keep the aspect within one percent.
+    assert.ok(Math.abs(width / height - w! / h!) < 0.01);
     assert.equal(width % 2, 0);
     assert.equal(height % 2, 0);
     assert.equal(Math.max(width, height), 1280);
@@ -393,6 +401,28 @@ test("supported preview and output frames have one exact aspect with even encode
   }
   assert.throws(() =>
     parseLocalStageValue({ ...createLocalStage(), aspectRatio: "0:1" }),
+  );
+});
+
+test("motion presets pick imported clips by contained name hints, clip order first", () => {
+  assert.deepEqual(
+    Object.keys(STAGE_ANIMATION_HINTS).sort(),
+    Object.keys(STAGE_MOTIONS).sort(),
+  );
+  const clips = [
+    { name: "mixamo.com" },
+    { name: "Standing_Idle" },
+    { name: "Walk Forward" },
+  ];
+  assert.equal(selectStageAnimation(clips, "walk")!.name, "Walk Forward");
+  assert.equal(selectStageAnimation(clips, "idle")!.name, "Standing_Idle");
+  assert.equal(selectStageAnimation([{ name: "WALK" }], "walk")!.name, "WALK");
+  assert.equal(selectStageAnimation(clips, "run")!.name, "mixamo.com");
+  assert.equal(selectStageAnimation([], "walk"), undefined);
+  const ordered = [{ name: "Walking_slow" }, { name: "Walk_fast" }];
+  assert.equal(
+    selectStageAnimation(ordered, "walk")!.name,
+    "Walking_slow",
   );
 });
 
@@ -436,4 +466,75 @@ test("the production canvas boundary persists the full edited stage and its chan
   assert.ok(legacy.ok);
   if (legacy.ok)
     assert.equal(legacy.value.nodes[0]!.data.localStage!.version, 2);
+});
+
+test("export plans concatenate the storyboard and skip uncovered gaps", () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    duration: 8,
+    cameras: [
+      {
+        id: "camera-1",
+        name: "Camera 1",
+        pose: defaultStageCamera(),
+        keyframes: [],
+      },
+      {
+        id: "b",
+        name: "Camera B",
+        pose: defaultStageCamera(),
+        keyframes: [],
+      },
+    ],
+    shots: [
+      { id: "first", cameraId: "camera-1", start: 0, duration: 2 },
+      { id: "later", cameraId: "b", start: 4, duration: 1.5 },
+    ],
+  });
+  const plan = stageExportPlan(stage, "storyboard");
+  assert.equal(plan.duration, 3.5);
+  // Export time 0..2 covers the first shot's document window.
+  assert.equal(plan.timeAt(0), 0);
+  assert.equal(plan.timeAt(1.5), 1.5);
+  // The uncovered 2..4 document gap never appears in the export.
+  assert.equal(plan.timeAt(2), 4);
+  assert.equal(plan.timeAt(3.5), 5.5);
+  assert.equal(sampleStage(plan.stage, plan.timeAt(1)).cameraId, "camera-1");
+  assert.equal(sampleStage(plan.stage, plan.timeAt(2.5)).cameraId, "b");
+  // The draft keeps its own camera strategy; only the plan changed.
+  assert.equal(stage.cameraSource, "camera");
+});
+
+test("export plans pin one camera for the whole document and validate the source", () => {
+  const stage = parseLocalStageValue({
+    ...createLocalStage(),
+    duration: 5,
+    cameras: [
+      {
+        id: "camera-1",
+        name: "Camera 1",
+        pose: defaultStageCamera(),
+        keyframes: [],
+      },
+      {
+        id: "b",
+        name: "Camera B",
+        pose: defaultStageCamera(),
+        keyframes: [],
+      },
+    ],
+    cameraSource: "storyboard",
+    shots: [{ id: "only", cameraId: "b", start: 0, duration: 5 }],
+  });
+  const plan = stageExportPlan(stage, "camera-1");
+  assert.equal(plan.duration, 5);
+  assert.equal(plan.timeAt(4.2), 4.2);
+  assert.equal(plan.stage.cameraSource, "camera");
+  assert.equal(plan.stage.activeCameraId, "camera-1");
+  assert.throws(() => stageExportPlan(stage, "nope"), /camera|摄像机/);
+  assert.throws(
+    () =>
+      stageExportPlan(parseLocalStageValue(createLocalStage()), "storyboard"),
+    /shot|分镜/,
+  );
 });

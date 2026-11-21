@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, TypeAdapter, create_model, model_validator
 
 from .assets import AssetRef, MediaMetadata
-from .base import Contract, Digest, GenerationKind, MediaKind, ObjectVersion, Point, Positive, Revision, digest, unique
+from .base import Contract, Digest, GenerationKind, Identifier, MediaKind, ObjectVersion, Point, Positive, PositiveInt, Revision, digest, unique
 from .canvas import CanvasItem
 from .editors import EditorDocument
 from opendirector.domain.rule_facts import PROMPT_MAX_LENGTH
@@ -145,11 +145,29 @@ class MediaPublicationOutput(Contract):
     height: float = Field(default=198, gt=0, le=10000, description='Height in pixels.')
 
 
+class DirectorOutputPlan(Contract):
+    cameraSource: Literal['camera', 'storyboard'] = Field(description='Camera selection strategy fixed for this render.')
+    cameraId: Identifier | None = Field(default=None, description='Camera rig fixed for a camera render; omitted for storyboard renders.')
+    width: PositiveInt = Field(description='Expected output width in pixels.')
+    height: PositiveInt = Field(description='Expected output height in pixels.')
+    durationSeconds: Positive = Field(description='Expected output duration in seconds.')
+    frameRate: Positive = Field(description='Expected output frames per second.')
+
+    @model_validator(mode='after')
+    def camera_selection(self):
+        if self.cameraSource == 'camera' and self.cameraId is None:
+            raise ValueError('Camera renders require a camera ID')
+        if self.cameraSource == 'storyboard' and self.cameraId is not None:
+            raise ValueError('Storyboard renders cannot select a camera ID')
+        return self
+
+
 class CanvasPublishMedia(Contract):
     itemId: UUID = Field(description='Canvas item ID.')
     source: AssetRef | None = Field(default=None, description='Input source or recorded provenance.')
     sourceEditorId: UUID | None = Field(default=None, description='Source editable document ID.')
     document: EditorDocument = Field(description='Editable document owned by this operation.')
+    directorPlan: DirectorOutputPlan | None = Field(default=None, description='Frozen Director video output plan, when publishing a stage video.')
     outputs: tuple[MediaPublicationOutput, ...] = Field(min_length=1, max_length=50, description='Ordered published media outputs.')
 
     @model_validator(mode='after')
@@ -158,6 +176,13 @@ class CanvasPublishMedia(Contract):
         unique([output.asset.assetId for output in self.outputs], 'output asset IDs')
         if self.document.kind not in {'media_edit', 'director'}:
             raise ValueError('Local publication requires a media edit or director snapshot')
+        has_director_video = self.document.kind == 'director' and any(
+            output.asset.kind == 'video' for output in self.outputs
+        )
+        if has_director_video and self.directorPlan is None:
+            raise ValueError('Director video publications require a frozen output plan')
+        if self.document.kind != 'director' and self.directorPlan is not None:
+            raise ValueError('Only Director publications can carry an output plan')
         return self
 
 

@@ -214,6 +214,10 @@ export const editors = {
     "A keyframe references a missing or duplicate stage object.",
   "editors.stage.error.invalidLegacyObject": "A legacy stage object is invalid.",
   "editors.stage.error.jointMotionPerson": "Only people support joint motion.",
+  "editors.stage.error.importedSceneMotion":
+    "Scene assets cannot carry character motion clips.",
+  "editors.stage.error.importedMotionUnavailable":
+    "This imported character has no animation data.",
   "editors.stage.error.invalidDocument":
     "The local director preview format is invalid.",
   "editors.stage.error.invalidObject":
@@ -225,6 +229,8 @@ export const editors = {
   "editors.stage.error.shotCamera":
     "A shot references a camera that does not exist.",
   "editors.stage.error.cameraMissing": "The camera does not exist.",
+  "editors.stage.error.exportStoryboardEmpty":
+    "Exporting from the storyboard needs at least one shot.",
 
   "editors.layerDocument.defaultName": "Original image",
   "editors.layerDocument.error.size":
@@ -291,6 +297,26 @@ export const editors = {
   "editors.stage.ui.objectPerson": "Person",
   "editors.stage.ui.objectBox": "Box",
   "editors.stage.ui.objectSphere": "Sphere",
+  "editors.stage.ui.objectGltf": "Imported model",
+  "editors.stage.ui.importAsset": "Import GLB / GLTF",
+  "editors.stage.ui.assetRole": "Imported asset role",
+  "editors.stage.ui.assetCharacter": "Character",
+  "editors.stage.ui.assetScene": "Scene",
+  "editors.stage.ui.assetNotice":
+    "This character has no animation data; it still follows camera, storyboard, and transform keyframes.",
+  "editors.stage.ui.assetUnavailable":
+    "The imported asset is unavailable. Reopen the project or import it again.",
+  "editors.stage.ui.assetLoadFailed":
+    "Could not load “{name}”. The file may be corrupt or reference external resources.",
+  "editors.stage.ui.assetCorrupt":
+    "Could not read “{name}”: the GLB header is valid but the embedded JSON is missing or corrupt.",
+  "editors.stage.ui.assetTooLarge":
+    "“{name}” is larger than {size} MB. Use a smaller GLB or GLTF file.",
+  "editors.stage.ui.assetUnsupported":
+    "Only GLB and self-contained GLTF files are supported. FBX and external GLTF resources are not supported yet.",
+  "editors.stage.ui.assetImported":
+    "Imported {name} · {animationCount} animation clips",
+  "editors.stage.ui.assetImportedStatic": "Imported {name} · no animation data",
   "editors.stage.ui.degreesSuffix": " (degrees)",
   "editors.stage.ui.editFailed": "The stage change failed.",
   "editors.stage.ui.cameraName": "Camera {number}",
@@ -303,6 +329,10 @@ export const editors = {
   "editors.stage.ui.rendererNotReady": "The stage renderer is not ready yet.",
   "editors.stage.ui.screenshotFailed": "The screenshot failed.",
   "editors.stage.ui.importFailed": "The stage could not be imported.",
+  "editors.stage.ui.importForeignAssets":
+    "The stage file pins imported models that are not registered in this project: {names}. Open the stage in its original project, or import the model files here first.",
+  "editors.stage.ui.exportUnsavedImports":
+    "The stage file cannot carry imported models that exist only in this browser: {names}. Apply edits to save them to the project first.",
   "editors.stage.ui.exportFailed": "The preview video export failed.",
   "editors.stage.ui.motionTitle": "{title} · Motion preview",
   "editors.stage.ui.addCanvasFailed": "Adding to the canvas failed.",
@@ -313,12 +343,50 @@ export const editors = {
   "editors.stage.ui.redo": "Redo",
   "editors.stage.ui.importJson": "Import stage JSON",
   "editors.stage.ui.exportJson": "Export stage JSON",
-  "editors.stage.ui.screenshot": "Download camera still",
+  "editors.stage.ui.screenshot": "Capture camera still",
+  "editors.stage.ui.stillSaving": "Saving photo…",
+  "editors.stage.ui.shotMaterials": "Shot materials",
+  "editors.stage.ui.closeDrawer": "Collapse shot materials",
+  "editors.stage.ui.selectAllStills": "Select all",
+  "editors.stage.ui.selectedStillsCount": "{count} selected",
+  "editors.stage.ui.stillName": "Capture_{number}",
+  "editors.stage.ui.stillEmpty":
+    "No shot materials yet; captures land here automatically.",
+  "editors.stage.ui.stillMissing": "Media unavailable",
+  "editors.stage.ui.previewStill": "Preview {name}",
+  "editors.stage.ui.closePreview": "Close preview",
+  "editors.stage.ui.deleteSelectedStills": "Delete selected",
+  "editors.stage.ui.downloadSelectedStills": "Download selected",
+  "editors.stage.ui.addStillsToCanvas": "Add to canvas",
+  "editors.stage.ui.stillsAddedToCanvas": "Added {count} still(s) to canvas.",
+  "editors.stage.ui.stillDownloadFailed": "The photo download failed.",
+  "editors.stage.ui.stillCaptured":
+    "Still captured. Applying registers it as a project image asset.",
   "editors.stage.ui.renderMp4": "Render preview MP4",
   "editors.stage.ui.renderProgress": "Rendering preview {percent}%",
   "editors.stage.ui.cancelRender": "Cancel rendering",
   "editors.stage.ui.renderDone":
-    "Preview MP4 complete · {width}×{height} · 30 fps",
+    "Preview MP4 complete · {width}×{height} · {fps} fps",
+  "editors.stage.ui.exportVideo": "Export video",
+  "editors.stage.ui.exportSubtitle":
+    "Pick one camera to export the full dynamic preview.",
+  "editors.stage.ui.exportSourceLabel": "Camera source",
+  "editors.stage.ui.exportSourceStoryboard": "Storyboard",
+  "editors.stage.ui.exportAspectLabel": "Aspect",
+  "editors.stage.ui.exportDurationLabel": "Duration",
+  "editors.stage.ui.exportClarityLabel": "Quality",
+  "editors.stage.ui.exportClarityStandard": "Standard · 1280 px long edge",
+  "editors.stage.ui.exportClarityHigh": "High · 1920 px long edge",
+  "editors.stage.ui.exportFpsLabel": "Frame rate",
+  "editors.stage.ui.exportFpsOption": "{fps} FPS",
+  "editors.stage.ui.exportNoteStoryboard":
+    "Follows the storyboard and keeps the full dynamic preview.",
+  "editors.stage.ui.exportNoteCamera":
+    "Uses {name} throughout, keeping that camera's moves and the subjects' motion.",
+  "editors.stage.ui.exportNoteClean":
+    "The output contains no guides, control points or editor interface.",
+  "editors.stage.ui.exportConfirm": "Export",
+  "editors.stage.ui.exportCancel": "Cancel",
   "editors.stage.ui.downloadMp4": "Download preview MP4",
   "editors.stage.ui.addedToCanvas": "Added to canvas",
   "editors.stage.ui.addToCanvas": "Add preview video to canvas",
@@ -387,7 +455,7 @@ export const editors = {
   "editors.stage.ui.verticalFov": "Vertical field of view {value}°",
   "editors.stage.ui.resetCamera": "Reset camera",
   "editors.stage.ui.footerHint":
-    "Editing the camera or a subject writes a keyframe at the current time; preview, stills, and MP4 share the aspect and sampling. Storyboard cuts, segmented joint motion, and 30 fps MP4 export are supported. External skinned FBX/GLB characters and cloud director versions are not connected yet.",
+    "Editing the camera or a subject writes a keyframe at the current time; preview, stills, and MP4 share the aspect and sampling. GLB and self-contained GLTF characters or scene assets are registered in the project and follow camera, storyboard, and transform keyframes. FBX and external GLTF resources are not supported yet.",
   "editors.stage.ui.importAria": "Import director stage",
   "editors.stage.ui.startSeconds": "Start (s)",
   "editors.stage.ui.durationSeconds": "Duration (s)",
