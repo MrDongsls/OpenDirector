@@ -145,6 +145,53 @@ test("failed output preparation retains successful imports and retries the same 
   );
 });
 
+test("reloading during output preparation resumes only the unfinished slot", async (t) => {
+  const original = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "sessionStorage",
+  );
+  const saved = new Map<string, string>();
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      getItem: (k: string) => saved.get(k) ?? null,
+      setItem: (k: string, v: string) => saved.set(k, v),
+      removeItem: (k: string) => saved.delete(k),
+    },
+  });
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, "sessionStorage", original);
+    else Reflect.deleteProperty(globalThis, "sessionStorage");
+  });
+  const { client, snapshot, item } = setup(t);
+  t.mock.restoreAll();
+  const handles: string[] = [];
+  const reference = assetReference(
+    snapshot.assets.find((candidate) => candidate.kind === "image")!,
+  );
+  client.importBlob = async (_blob, _name, _kind, handle) => {
+    handles.push(handle!);
+    if (handles.length === 2) throw Error("lost import reply");
+    return { ...reference, assetId: crypto.randomUUID() };
+  };
+  const outputs = [...output, { ...output[0], title: "Second" }];
+  const first = new MediaPublication(client, snapshot, item.id);
+  await assert.rejects(first.publish(outputs), /lost import reply/);
+  assert.equal(saved.size, 1);
+
+  const calls: unknown[][] = [];
+  client.command = async (...args) => {
+    calls.push(structuredClone(args));
+    return { status: "applied" } as CommandReceipt;
+  };
+  const reopened = new MediaPublication(client, snapshot, item.id);
+  await reopened.publish(outputs);
+  assert.equal(handles.length, 3, "the completed first slot is not uploaded again");
+  assert.equal(handles[1], handles[2], "the unfinished slot keeps its handle");
+  assert.equal((calls[0]![1] as { outputs: unknown[] }).outputs.length, 2);
+  assert.equal(saved.size, 0);
+});
+
 test("new local results retain normal node dimensions and avoid earlier published results", async (t) => {
   const { client, snapshot, item } = setup(t);
   const occupied = {

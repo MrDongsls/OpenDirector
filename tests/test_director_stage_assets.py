@@ -404,6 +404,15 @@ def test_director_publish_rejects_videos_longer_than_the_stage(tmp_path):
     assert receipt.status == 'rejected', receipt
 
 
+def test_director_publish_rejects_videos_shorter_than_the_camera_stage(tmp_path):
+    projects, send, pid, item_id, document, video = director_publish_project(tmp_path, seconds=1)
+    receipt = send('canvas.publishMedia', **director_publish_payload(pid, item_id, document, [video]),
+                   versions=[dict(objectType='canvas_item', id=item_id, revision=1),
+                             dict(objectType='editor_document', id=document['id'], revision=1),
+                             dict(objectType='asset', id=video.id, revision=video.revision)])
+    assert receipt.status == 'rejected', receipt
+
+
 def test_director_publish_rejects_video_with_wrong_output_dimensions(tmp_path):
     projects, send, pid, item_id, document, video = director_publish_project(tmp_path, seconds=1, size='64x64')
     receipt = send('canvas.publishMedia', **director_publish_payload(pid, item_id, document, [video]),

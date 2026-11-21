@@ -134,7 +134,10 @@ def publish_media(service, data, payload):
                     '预演视频实际帧率与执行计划不一致。 The preview video frame rate does not match the execution plan.',
                     asset.id,
                 )
-            if asset.metadata.durationSeconds is None or not 0 < asset.metadata.durationSeconds <= director_duration + .15:
+            if asset.metadata.durationSeconds is None or not (
+                0 < asset.metadata.durationSeconds and
+                director_duration - .15 <= asset.metadata.durationSeconds <= director_duration + .15
+            ):
                 raise ContractError(
                     'invalid_input',
                     '预演视频实际时长与执行计划不一致。 The preview video duration does not match the execution plan.',
