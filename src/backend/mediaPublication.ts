@@ -28,6 +28,19 @@ type Delivery = {
   key: string;
   payload: CanvasPublishMediaInput;
   versions: ReturnType<typeof objectVersion>[];
+  /** Stable slots are written before the first upload, so a failed later
+   * upload can resume without changing the already-imported outputs. */
+  prepared?: DeliverySlot[];
+};
+
+type DeliverySlot = {
+  itemId: string;
+  title: string;
+  position: { x: number; y: number };
+  width: number;
+  height: number;
+  uploadHandle: string;
+  asset?: CanvasPublishMediaInput["outputs"][number]["asset"];
 };
 
 /** Only command delivery is retained locally; output bytes are owned project assets. */
@@ -100,6 +113,12 @@ export class MediaPublication {
         .join("");
       if (this.confirmed === key) return this.confirmedIds;
       const resolvingPrevious = !!this.pending && this.pending.key !== key;
+      if (
+        resolvingPrevious &&
+        this.pending?.prepared &&
+        this.pending.payload.outputs.length < this.pending.prepared.length
+      )
+        throw Error(tNow("errors.backend.mediaPreparationPending"));
       if (!this.pending && this.rejected?.key === key) {
         this.pending = { ...this.rejected, id: crypto.randomUUID() };
         this.remember();
@@ -192,44 +211,84 @@ export class MediaPublication {
           x: start.x + item.width + 100,
           y: start.y,
         });
-        const published = [];
-        for (const [index, output] of outputs.entries()) {
-          const asset = await this.projection.importResource({
-            ...output,
-            identity: `publication:${document.id}:${index}`,
-            fresh: true,
-          });
-          versions.push(
-            objectVersion("asset", {
-              id: asset.assetId,
-              revision: asset.revision,
-            }),
-          );
-          published.push({
-            itemId: crypto.randomUUID(),
-            asset,
-            title: output.title,
-            position: placed[index]!.position,
-            width: placed[index]!.width,
-            height: placed[index]!.height,
-          });
-        }
         this.pending = {
           id: crypto.randomUUID(),
           key,
           versions,
+          prepared: outputs.map((output, index) => {
+            const placement = placed[index]!;
+            return {
+              itemId: crypto.randomUUID(),
+              title: output.title,
+              position: placement.position,
+              width: placement.width,
+              height: placement.height,
+              uploadHandle: crypto.randomUUID(),
+            };
+          }),
           payload: {
             itemId: item.id,
             source: source ? assetReference(source) : null,
             ...(sourceEditorId ? { sourceEditorId } : {}),
             document,
             ...(directorPlan ? { directorPlan } : {}),
-            outputs: published,
+            outputs: [],
           },
         };
         this.remember();
       }
-      const delivery = this.pending;
+      let delivery = this.pending;
+      if (!delivery) throw Error(tNow("errors.backend.savingResult"));
+      const prepared = delivery.prepared;
+      if (prepared) {
+        if (outputs.length !== prepared.length)
+          throw Error(tNow("errors.backend.mediaPreparationPending"));
+        for (
+          let index = delivery.payload.outputs.length;
+          index < prepared.length;
+          index++
+        ) {
+          const slot = prepared[index]!;
+          const output = outputs[index]!;
+          const asset = await this.projection.importResource({
+            ...output,
+            identity: `publication:${delivery.payload.document.id}:${index}`,
+            fresh: true,
+            uploadHandle: slot.uploadHandle,
+          });
+          delivery = {
+            ...delivery,
+            versions: [
+              ...delivery.versions,
+              objectVersion("asset", {
+                id: asset.assetId,
+                revision: asset.revision,
+              }),
+            ],
+            payload: {
+              ...delivery.payload,
+              outputs: [
+                ...delivery.payload.outputs,
+                {
+                  itemId: slot.itemId,
+                  asset,
+                  title: slot.title,
+                  position: slot.position,
+                  width: slot.width,
+                  height: slot.height,
+                },
+              ],
+            },
+          };
+          this.pending = delivery;
+          this.remember();
+        }
+      }
+      if (
+        delivery.prepared &&
+        delivery.payload.outputs.length !== delivery.prepared.length
+      )
+        throw Error(tNow("errors.backend.mediaPreparationPending"));
       await this.client.command(
         "canvas.publishMedia",
         delivery.payload,

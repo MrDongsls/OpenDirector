@@ -242,6 +242,8 @@ export const errors = {
     "The pinned reference version is missing or its content changed.",
   "errors.backend.savingResult":
     "The result is being saved. Try again shortly.",
+  "errors.backend.mediaPreparationPending":
+    "An earlier media publication is still preparing. Retry it before changing the output.",
   "errors.backend.editSourceUnsaved": "The edit source has not been saved.",
   "errors.backend.notDirectorStage":
     "This is not a publishable director stage.",
