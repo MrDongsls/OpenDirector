@@ -494,7 +494,7 @@ function cameraPresetPoseForObject(
     },
     target: center,
     fov: spec.fov,
-    ...(spec.roll !== undefined ? { roll: spec.roll } : {}),
+    roll: spec.roll ?? 0,
   };
 }
 const axes = ["x", "y", "z"] as const;
@@ -917,6 +917,7 @@ function setDirectorView(runtime: StageRuntime, value: StageCamera) {
   runtime.camera.updateProjectionMatrix();
   runtime.controls.target.set(value.target.x, value.target.y, value.target.z);
   runtime.controls.update();
+  applyRoll(runtime.camera, value);
 }
 /** Pose cameras carry roll; apply it after lookAt by rotating on the view axis. */
 function applyRoll(camera: THREE.PerspectiveCamera, value: StageCamera) {
