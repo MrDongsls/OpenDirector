@@ -15,14 +15,16 @@ function reduce(
 test("initial view state contains only ephemeral stage-session concerns", () => {
   const state = createDirectorStageViewState("person");
 
-  assert.equal(state.selectedObjectId, "person");
+  assert.deepEqual(state.selection, { kind: "object", objectId: "person" });
   assert.equal(state.interactionMode.kind, "edit");
-  assert.equal(state.cameraPreview, false);
+  assert.equal(state.cameraPreview, true);
+  assert.equal(state.cameraPreviewCameraId, null);
   assert.equal(state.previewMode, "static");
   assert.deepEqual(state.splitView, { kind: "closed", ratio: 0.5 });
   assert.equal(state.drawerOpen, false);
   assert.equal(state.helpOpen, false);
   assert.deepEqual(state.selectedStillIds, new Set<string>());
+  assert.equal(state.lastExportFps, null);
   assert.deepEqual(state.exportDialog, {
     kind: "closed",
     source: "",
@@ -85,6 +87,34 @@ test("placement can retain the preview object's source identity", () => {
     sourceObjectId: "imported-character",
   });
 });
+test("camera presets arm an exclusive target-object placement mode", () => {
+  const initial = createDirectorStageViewState(null);
+  const armed = reduce(initial, {
+    type: "armCameraPreset",
+    preset: "frontMedium",
+  });
+
+  assert.deepEqual(armed.interactionMode, {
+    kind: "cameraPreset",
+    preset: "frontMedium",
+  });
+  assert.deepEqual(
+    reduce(armed, { type: "cancelCameraPreset" }).interactionMode,
+    { kind: "edit" },
+  );
+  assert.deepEqual(
+    reduce(
+      armed,
+      { type: "armPlacement", objectKind: "person", sourceObjectId: null },
+    ).interactionMode,
+    { kind: "placement", objectKind: "person", sourceObjectId: null },
+  );
+  assert.deepEqual(
+    reduce(armed, { type: "armCameraPreset", preset: "frontMedium" })
+      .interactionMode,
+    { kind: "edit" },
+  );
+});
 test("split view owns its ratio and camera without changing selection", () => {
   const initial = createDirectorStageViewState("person");
   const split = reduce(initial, {
@@ -98,7 +128,7 @@ test("split view owns its ratio and camera without changing selection", () => {
     cameraId: "camera-2",
     ratio: 0.8,
   });
-  assert.equal(split.selectedObjectId, "person");
+  assert.deepEqual(split.selection, { kind: "object", objectId: "person" });
   assert.deepEqual(
     reduce(split, { type: "setSplitCamera", cameraId: null }).splitView,
     { kind: "open", cameraId: null, ratio: 0.8 },
@@ -155,6 +185,7 @@ test("view flags, focus, panels, drawer selection, export, and gizmo mode reduce
     clarity: 1280,
     fps: 30,
   });
+  assert.equal(state.lastExportFps, 30);
 
   const cleared = reduce(state, { type: "clearStillSelection" });
   assert.deepEqual(cleared.selectedStillIds, new Set<string>());
@@ -168,6 +199,13 @@ test("view flags, focus, panels, drawer selection, export, and gizmo mode reduce
       fps: 30,
     },
   );
+  assert.equal(
+    reduce(
+      reduce(cleared, { type: "closeExport" }),
+      { type: "openExport", source: "camera-2", clarity: 1280, fps: 60 },
+    ).exportDialog.fps,
+    30,
+  );
 });
 
 test("explicit setters cover the remaining session boundaries", () => {
@@ -176,6 +214,7 @@ test("explicit setters cover the remaining session boundaries", () => {
     { type: "selectObject", objectId: "object-1" },
     { type: "focusSurface", surface: "inspector" },
     { type: "setCameraPreview", enabled: true },
+    { type: "setCameraPreviewCamera", cameraId: "camera-2" },
     { type: "setViewMenu", open: true },
     { type: "setTreeGroup", group: "objects", expanded: false },
     { type: "setHelp", open: true },
@@ -183,14 +222,27 @@ test("explicit setters cover the remaining session boundaries", () => {
     { type: "setPreviewStill", stillId: "still-1" },
   );
 
-  assert.equal(state.selectedObjectId, "object-1");
+  assert.deepEqual(state.selection, { kind: "object", objectId: "object-1" });
   assert.equal(state.focusedSurface, "inspector");
   assert.equal(state.cameraPreview, true);
+  assert.equal(state.cameraPreviewCameraId, "camera-2");
   assert.equal(state.viewMenuOpen, true);
   assert.equal(state.treeGroups.objects, false);
   assert.equal(state.helpOpen, true);
   assert.equal(state.drawerOpen, true);
   assert.equal(state.previewStillId, "still-1");
+});
+
+test("camera preview selection is independent from the main selection", () => {
+  const initial = createDirectorStageViewState("object-1", "camera-1");
+  const preview = directorStageViewReducer(initial, {
+    type: "setCameraPreviewCamera",
+    cameraId: "camera-2",
+  });
+
+  assert.equal(preview.cameraPreviewCameraId, "camera-2");
+  assert.deepEqual(preview.selection, { kind: "object", objectId: "object-1" });
+  assert.equal(preview.cameraPreview, true);
 });
 
 test("preview mode is ephemeral and preserves the current selection", () => {
@@ -201,5 +253,30 @@ test("preview mode is ephemeral and preserves the current selection", () => {
   });
 
   assert.equal(dynamic.previewMode, "dynamic");
-  assert.equal(dynamic.selectedObjectId, "object-1");
+  assert.deepEqual(dynamic.selection, { kind: "object", objectId: "object-1" });
+});
+
+test("camera and viewpoint selections force the translation gizmo", () => {
+  const initial = createDirectorStageViewState("object-1");
+  const camera = reduce(initial, { type: "selectCamera", cameraId: "camera-1" });
+  assert.deepEqual(camera.selection, { kind: "camera", cameraId: "camera-1" });
+  assert.equal(camera.activeGizmo, "translate");
+  assert.equal(
+    reduce(camera, { type: "setGizmo", gizmo: "rotate" }).activeGizmo,
+    "translate",
+  );
+
+  const viewpoint = reduce(camera, {
+    type: "selectViewpoint",
+    cameraId: "camera-1",
+  });
+  assert.deepEqual(viewpoint.selection, {
+    kind: "viewpoint",
+    cameraId: "camera-1",
+  });
+  assert.equal(viewpoint.activeGizmo, "translate");
+  assert.equal(
+    reduce(viewpoint, { type: "setGizmo", gizmo: "scale" }).activeGizmo,
+    "translate",
+  );
 });

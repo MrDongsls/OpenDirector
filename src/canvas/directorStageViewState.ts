@@ -19,6 +19,26 @@ export type DirectorStageViewFlag =
 
 export type DirectorStageGizmo = "translate" | "rotate" | "scale";
 
+export type DirectorStageCameraPreset =
+  | "frontMedium"
+  | "frontClose"
+  | "frontWide"
+  | "sideTrack"
+  | "sideClose"
+  | "backMedium"
+  | "overheadWide"
+  | "highAngle"
+  | "lowAngle"
+  | "lowWide"
+  | "overShoulder"
+  | "bird"
+  | "dutch";
+
+export type DirectorStageSelection =
+  | { kind: "object"; objectId: string }
+  | { kind: "camera"; cameraId: string }
+  | { kind: "viewpoint"; cameraId: string };
+
 export type DirectorStagePreviewMode = "static" | "dynamic";
 
 export type DirectorStageFocusedSurface =
@@ -42,6 +62,7 @@ export type DirectorStageInteractionMode =
       objectKind: StageObject["kind"];
       sourceObjectId: string | null;
     }
+  | { kind: "cameraPreset"; preset: DirectorStageCameraPreset };
 
 export interface DirectorStageViewFlags {
   ground: boolean;
@@ -72,10 +93,12 @@ export type DirectorStageExportDialog =
     };
 
 export interface DirectorStageViewState {
-  selectedObjectId: string | null;
+  selection: DirectorStageSelection | null;
   focusedSurface: DirectorStageFocusedSurface;
   interactionMode: DirectorStageInteractionMode;
   cameraPreview: boolean;
+  /** Ephemeral camera selected by the independent PiP preview panel. */
+  cameraPreviewCameraId: string | null;
   /** Ephemeral sampling preference; never part of LocalStageDocument. */
   previewMode: DirectorStagePreviewMode;
   splitView: DirectorStageSplitView;
@@ -88,15 +111,19 @@ export interface DirectorStageViewState {
   drawerOpen: boolean;
   selectedStillIds: ReadonlySet<string>;
   previewStillId: string | null;
+  lastExportFps: number | null;
   exportDialog: DirectorStageExportDialog;
   activeGizmo: DirectorStageGizmo;
 }
 
 export type DirectorStageViewAction =
   | { type: "selectObject"; objectId: string | null }
+  | { type: "selectCamera"; cameraId: string }
+  | { type: "selectViewpoint"; cameraId: string }
   | { type: "focusSurface"; surface: DirectorStageFocusedSurface }
   | { type: "toggleCameraPreview" }
   | { type: "setCameraPreview"; enabled: boolean }
+  | { type: "setCameraPreviewCamera"; cameraId: string }
   | { type: "setPreviewMode"; mode: DirectorStagePreviewMode }
   | { type: "toggleViewfinder" }
   | { type: "toggleRoam" }
@@ -106,6 +133,8 @@ export type DirectorStageViewAction =
       sourceObjectId: string | null;
     }
   | { type: "cancelPlacement" }
+  | { type: "armCameraPreset"; preset: DirectorStageCameraPreset }
+  | { type: "cancelCameraPreset" }
   | { type: "openSplit"; cameraId: string | null; ratio?: number }
   | { type: "closeSplit" }
   | { type: "setSplitRatio"; ratio: number }
@@ -164,12 +193,18 @@ const DEFAULT_TREE_GROUPS: Record<DirectorStageTreeGroup, boolean> = {
 
 export function createDirectorStageViewState(
   selectedObjectId: string | null,
+  cameraPreviewCameraId: string | null = null,
 ): DirectorStageViewState {
   return {
-    selectedObjectId,
+    selection: selectedObjectId
+      ? { kind: "object", objectId: selectedObjectId }
+      : null,
     focusedSurface: "console",
     interactionMode: { kind: "edit" },
-    cameraPreview: false,
+    // The reference console keeps the selected camera's monitor visible next
+    // to the director view; the toolbar can still close it for a clean canvas.
+    cameraPreview: true,
+    cameraPreviewCameraId,
     previewMode: "static",
     splitView: { kind: "closed", ratio: 0.5 },
     viewFlags: { ...DEFAULT_VIEW_FLAGS },
@@ -181,6 +216,7 @@ export function createDirectorStageViewState(
     drawerOpen: false,
     selectedStillIds: new Set<string>(),
     previewStillId: null,
+    lastExportFps: null,
     exportDialog: { kind: "closed", source: "", clarity: 1280, fps: 30 },
     activeGizmo: "translate",
   };
@@ -197,13 +233,32 @@ export function directorStageViewReducer(
 ): DirectorStageViewState {
   switch (action.type) {
     case "selectObject":
-      return { ...state, selectedObjectId: action.objectId };
+      return {
+        ...state,
+        selection: action.objectId
+          ? { kind: "object", objectId: action.objectId }
+          : null,
+      };
+    case "selectCamera":
+      return {
+        ...state,
+        selection: { kind: "camera", cameraId: action.cameraId },
+        activeGizmo: "translate",
+      };
+    case "selectViewpoint":
+      return {
+        ...state,
+        selection: { kind: "viewpoint", cameraId: action.cameraId },
+        activeGizmo: "translate",
+      };
     case "focusSurface":
       return { ...state, focusedSurface: action.surface };
     case "toggleCameraPreview":
       return { ...state, cameraPreview: !state.cameraPreview };
     case "setCameraPreview":
       return { ...state, cameraPreview: action.enabled };
+    case "setCameraPreviewCamera":
+      return { ...state, cameraPreviewCameraId: action.cameraId };
     case "setPreviewMode":
       return { ...state, previewMode: action.mode };
     case "toggleViewfinder":
@@ -242,6 +297,19 @@ export function directorStageViewReducer(
       };
     case "cancelPlacement":
       if (state.interactionMode.kind !== "placement") return state;
+      return { ...state, interactionMode: { kind: "edit" } };
+    case "armCameraPreset":
+      if (
+        state.interactionMode.kind === "cameraPreset" &&
+        state.interactionMode.preset === action.preset
+      )
+        return { ...state, interactionMode: { kind: "edit" } };
+      return {
+        ...state,
+        interactionMode: { kind: "cameraPreset", preset: action.preset },
+      };
+    case "cancelCameraPreset":
+      if (state.interactionMode.kind !== "cameraPreset") return state;
       return { ...state, interactionMode: { kind: "edit" } };
     case "openSplit":
       return {
@@ -337,15 +405,19 @@ export function directorStageViewReducer(
     case "setPreviewStill":
       return { ...state, previewStillId: action.stillId };
     case "openExport":
+      {
+        const fps = state.lastExportFps ?? action.fps;
       return {
         ...state,
+        lastExportFps: fps,
         exportDialog: {
           kind: "open",
           source: action.source,
           clarity: action.clarity,
-          fps: action.fps,
+          fps,
         },
       };
+      }
     case "closeExport":
       if (state.exportDialog.kind === "closed") return state;
       return {
@@ -368,9 +440,12 @@ export function directorStageViewReducer(
       if (state.exportDialog.kind === "closed") return state;
       return {
         ...state,
+        lastExportFps: action.fps,
         exportDialog: { ...state.exportDialog, fps: action.fps },
       };
     case "setGizmo":
+      if (state.selection && state.selection.kind !== "object" && action.gizmo !== "translate")
+        return { ...state, activeGizmo: "translate" };
       return { ...state, activeGizmo: action.gizmo };
     default: {
       const exhaustive: never = action;

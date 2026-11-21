@@ -7,9 +7,12 @@ import {
   sameLocalStage,
   sampleStage,
   sampleStageCamera,
+  sampleStageCameraEndpoint,
+  stageCameraEndpointId,
   editStageObjectAt,
   editStageObjectPlacement,
   editStageCameraAt,
+  editStageCameraEndpointAt,
   captureStageFrame,
   removeStageFrame,
   stageOutputSize,
@@ -206,9 +209,73 @@ test("camera channels round-trip independently and a position edit does not touc
   });
   const channels = edited.cameras[0]!.channels!;
   assert.equal(channels.position.at(-1)!.value.x, 10);
+  assert.equal(edited.cameras[0]!.keyframes.at(-1)!.time, 2);
   assert.deepEqual(channels.target, explicit.cameras[0]!.channels!.target);
   assert.deepEqual(channels.up, explicit.cameras[0]!.channels!.up);
   assert.deepEqual(channels.focalLength, explicit.cameras[0]!.channels!.focalLength);
+});
+
+test("camera and viewpoint endpoints have stable identities and independent edits", () => {
+  const stage = createLocalStage();
+  const camera = sampleStageCameraEndpoint(stage, "camera-1", "camera", 0);
+  const viewpoint = sampleStageCameraEndpoint(stage, "camera-1", "viewpoint", 0);
+  assert.equal(stageCameraEndpointId("camera-1", "camera"), "camera-1:camera");
+  assert.equal(stageCameraEndpointId("camera-1", "viewpoint"), "camera-1:viewpoint");
+  assert.deepEqual(camera, {
+    id: "camera-1:camera",
+    cameraId: "camera-1",
+    kind: "camera",
+    position: stage.cameras[0]!.pose.position,
+  });
+  assert.deepEqual(viewpoint, {
+    id: "camera-1:viewpoint",
+    cameraId: "camera-1",
+    kind: "viewpoint",
+    position: stage.cameras[0]!.pose.target,
+  });
+
+  const movedCamera = editStageCameraEndpointAt(
+    stage,
+    "camera-1",
+    "camera",
+    0,
+    { x: 8, y: 4, z: 6 },
+  );
+  assert.deepEqual(sampleStageCamera(movedCamera, "camera-1", 0), {
+    ...stage.cameras[0]!.pose,
+    position: { x: 8, y: 4, z: 6 },
+  });
+  assert.deepEqual(
+    sampleStageCameraEndpoint(movedCamera, "camera-1", "viewpoint", 0).position,
+    viewpoint.position,
+  );
+
+  const movedViewpoint = editStageCameraEndpointAt(
+    stage,
+    "camera-1",
+    "viewpoint",
+    0,
+    { x: 1, y: 2, z: 0 },
+  );
+  assert.deepEqual(sampleStageCamera(movedViewpoint, "camera-1", 0), {
+    ...stage.cameras[0]!.pose,
+    target: { x: 1, y: 2, z: 0 },
+  });
+  assert.deepEqual(
+    sampleStageCameraEndpoint(movedViewpoint, "camera-1", "camera", 0).position,
+    camera.position,
+  );
+  assert.throws(
+    () =>
+      editStageCameraEndpointAt(
+        stage,
+        "camera-1",
+        "viewpoint",
+        0,
+        camera.position,
+      ),
+    /摄像机|camera/i,
+  );
 });
 
 test("camera channels reject malformed values and old keyframes keep their sampled result", () => {

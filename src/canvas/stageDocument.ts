@@ -72,6 +72,14 @@ export interface StageCamera {
   /** Roll around the view axis in radians; 0 is level. */
   roll?: number;
 }
+export type StageCameraEndpointKind = "camera" | "viewpoint";
+export interface StageCameraEndpoint {
+  /** Stable presentation identity derived from the owning camera rig. */
+  id: string;
+  cameraId: string;
+  kind: StageCameraEndpointKind;
+  position: Vector3Value;
+}
 export interface StageCameraVectorFrame {
   id: string;
   time: number;
@@ -406,6 +414,18 @@ function cameraKeyframesFromChannels(
       ...(pose.roll ? { roll: pose.roll } : {}),
     },
   }));
+}
+function withCameraChannels(
+  camera: StageCameraRig,
+  channels: StageCameraChannels,
+): StageCameraRig {
+  return {
+    ...camera,
+    channels,
+    // Keep the legacy projection synchronized for existing UI and API readers
+    // while the independent channels become authoritative.
+    keyframes: cameraKeyframesFromChannels(camera.pose, channels),
+  };
 }
 export function defaultStageCamera(): StageCamera {
   return {
@@ -1004,6 +1024,43 @@ export function sampleStageCamera(
     ...(c.pose.roll ? { roll: c.pose.roll } : {}),
   };
 }
+export function stageCameraEndpointId(
+  cameraId: string,
+  kind: StageCameraEndpointKind,
+): string {
+  return `${cameraId}:${kind}`;
+}
+export function sampleStageCameraEndpoint(
+  stage: LocalStageDocument,
+  cameraId: string,
+  kind: StageCameraEndpointKind,
+  time: number,
+  t: Translate = defaultTranslate,
+): StageCameraEndpoint {
+  const pose = sampleStageCamera(stage, cameraId, time, t);
+  return {
+    id: stageCameraEndpointId(cameraId, kind),
+    cameraId,
+    kind,
+    position: kind === "camera" ? { ...pose.position } : { ...pose.target },
+  };
+}
+export function editStageCameraEndpointAt(
+  stage: LocalStageDocument,
+  cameraId: string,
+  kind: StageCameraEndpointKind,
+  time: number,
+  position: Vector3Value,
+  t: Translate = defaultTranslate,
+): LocalStageDocument {
+  return editStageCameraAt(
+    stage,
+    cameraId,
+    time,
+    kind === "camera" ? { position } : { target: position },
+    t,
+  );
+}
 /** Same global timeline and half-open cut boundaries for editor, screenshots and MP4. */
 export function sampleStage(
   stage: LocalStageDocument,
@@ -1147,10 +1204,9 @@ export function editStageCameraAt(
       cameras: stage.cameras.map((c) =>
         c.id !== id
           ? c
-          : {
-              ...c,
-              pose,
-              channels: {
+          : withCameraChannels(
+              { ...c, pose },
+              {
                 position: sameVector(current.position, pose.position)
                   ? cameraChannelsOf(c).position
                   : authorFrame(cameraChannelsOf(c).position, time, pose.position, c.pose.position),
@@ -1162,7 +1218,7 @@ export function editStageCameraAt(
                   ? cameraChannelsOf(c).focalLength
                   : authorFrame(cameraChannelsOf(c).focalLength, time, pose.fov, c.pose.fov),
               },
-            },
+            ),
       ),
     },
     t,
@@ -1189,15 +1245,15 @@ export function captureStageFrame(
       })),
       cameras: stage.cameras.map((c) =>
         c.id === pose.cameraId
-          ? {
-              ...c,
-              channels: {
+          ? (() => {
+              const channels = {
                 position: putFrame(cameraChannelsOf(c).position, time, pose.camera.position),
                 target: putFrame(cameraChannelsOf(c).target, time, pose.camera.target),
                 up: putFrame(cameraChannelsOf(c).up, time, defaultCameraUp()),
                 focalLength: putFrame(cameraChannelsOf(c).focalLength, time, pose.camera.fov),
-              },
-            }
+              } satisfies StageCameraChannels;
+              return withCameraChannels(c, channels);
+            })()
           : c,
       ),
     },
@@ -1227,15 +1283,14 @@ export function removeStageFrame(
       ...o,
       keyframes: o.keyframes.filter((f) => f.time !== time),
     })),
-    cameras: stage.cameras.map((c) => ({
-      ...c,
-      channels: {
+    cameras: stage.cameras.map((c) =>
+      withCameraChannels(c, {
         position: cameraChannelsOf(c).position.filter((f) => f.time !== time),
         target: cameraChannelsOf(c).target.filter((f) => f.time !== time),
         up: cameraChannelsOf(c).up.filter((f) => f.time !== time),
         focalLength: cameraChannelsOf(c).focalLength.filter((f) => f.time !== time),
-      },
-    })),
+      }),
+    ),
   };
 }
 /** Encoder resolution for a stage ratio. The default long edge matches the

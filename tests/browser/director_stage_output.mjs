@@ -146,6 +146,20 @@ try {
   // The drawer reopens the collection: preview, selection and the
   // add-to-canvas channel all act on the pinned still.
   await openStage(itemId);
+  const viewfinder = page.getByLabel("Viewfinder", { exact: true });
+  await viewfinder.check();
+  await page.waitForTimeout(150);
+  assert.equal(
+    await page.locator(".cw-stage-gizmo").isVisible(),
+    false,
+    "viewfinder hides director gizmos",
+  );
+  assert.equal(
+    await page.locator(".cw-stage-names").isVisible(),
+    false,
+    "viewfinder hides director labels",
+  );
+  await viewfinder.uncheck();
   await page
     .getByRole("button", { name: /^Shot materials/, exact: false })
     .click();
@@ -469,6 +483,7 @@ console.log(
     checks: [
       "first apply auto-captures a 1280x720 still asset",
       "the drawer previews, selects and publishes the pinned still to the canvas",
+      "viewfinder hides director-only DOM overlays",
       "an explicit capture appends a second still and keeps the old one registered",
       "a drawer deletion removes only the selected pin",
       "the export dialog offers per-camera sources and a linked duration",

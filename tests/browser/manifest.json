@@ -236,6 +236,20 @@
       ],
       "note": "Director Stage placement gizmo acceptance: preview dragging repositions a subject through base transforms without authoring keyframes, with one undo per drag. DIRECTOR_STAGE_LOCALE reruns the flow in another UI language."
     },
+      {
+        "file": "director_stage_pointer_alignment.mjs",
+        "lanes": [
+          "gate"
+        ],
+        "note": "Director Stage pointer alignment acceptance: fractional ground placement, selection, gizmo rendering and DPR-scaled viewport projection stay aligned."
+      },
+      {
+        "file": "director_stage_camera_preset.mjs",
+        "lanes": [
+          "gate"
+        ],
+        "note": "Director Stage camera preset acceptance: arm a preset, click a scene object to create a new camera aligned to its local facing, and persist the placement in both locales."
+      },
     {
       "file": "director_stage_pointer_alignment.mjs",
       "lanes": [

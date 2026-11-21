@@ -270,15 +270,86 @@ try {
   );
   await viewMenu.waitFor({ state: "detached" });
 
+  // The right object tree is the source for camera selection. The left camera
+  // tab keeps presets and moves, but no longer duplicates the camera list.
+  await page.getByRole("tab", { name: "Cameras", exact: true }).click();
+  const cameraTree = page.locator(".cw-stage-tree").first();
+  assert.equal(
+    await page.getByRole("button", { name: "Add camera", exact: true }).count(),
+    0,
+  );
+  assert.equal(await page.locator(".cw-stage-camera-list").count(), 0);
+  await inspector
+    .getByRole("button", { name: "Duplicate as new camera", exact: true })
+    .click();
+  assert.equal(
+    await cameraTree.locator(".cw-stage-camera-tree-row").count(),
+    2,
+  );
+  assert.equal(
+    await cameraTree.locator(".cw-stage-camera-tree-row-child").count(),
+    2,
+  );
+  const editCamera = page.getByRole("combobox", {
+    name: "Edit camera",
+    exact: true,
+  });
+  const secondCameraId = await editCamera.inputValue();
+  assert.notEqual(secondCameraId, "camera-1");
+  const cameraX = page.getByLabel("Camera X", { exact: true });
+  await cameraX.fill("-4");
+  await page.waitForTimeout(150);
+
   const cameraPreviewButton = page.getByRole("button", {
     name: "Camera preview",
     exact: true,
   });
-  await cameraPreviewButton.click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".cw-stage-console")
+        ?.querySelector(".cw-stage-pipframe") !== null,
+  );
+  assert.equal(await cameraPreviewButton.getAttribute("aria-pressed"), "true");
   const pipFrame = page.locator(".cw-stage-pipframe");
   const pipCanvas = page.locator(".cw-stage-pipcanvas");
+  const previewCamera = page.getByRole("combobox", {
+    name: "Preview camera",
+    exact: true,
+  });
   await pipFrame.waitFor();
   await pipCanvas.waitFor({ state: "visible" });
+  await previewCamera.waitFor();
+  assert.equal(await previewCamera.inputValue(), "camera-1");
+  assert.equal(await previewCamera.locator("option").count(), 2);
+  assert.equal(await editCamera.inputValue(), secondCameraId);
+  const frameSignature = () =>
+    pipCanvas.evaluate((canvas) => {
+      const context = canvas.getContext("2d");
+      if (!context || !canvas.width || !canvas.height) return "empty";
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let hash = 2166136261;
+      for (let index = 0; index < pixels.length; index += 97)
+        hash = Math.imul(hash ^ pixels[index], 16777619);
+      return `${canvas.width}x${canvas.height}:${hash >>> 0}`;
+    });
+  await page.waitForTimeout(250);
+  const cameraOneFrame = await frameSignature();
+  await previewCamera.selectOption(secondCameraId);
+  assert.equal(await previewCamera.inputValue(), secondCameraId);
+  assert.equal(await editCamera.inputValue(), secondCameraId);
+  await page.waitForTimeout(250);
+  const cameraTwoFrame = await frameSignature();
+  assert.notEqual(
+    cameraTwoFrame,
+    cameraOneFrame,
+    "switching the preview camera changes the rendered preview pixels",
+  );
+  const closePreview = page.getByRole("button", {
+    name: "Close camera preview",
+    exact: true,
+  });
+  await closePreview.waitFor();
   const pipBox = await pipFrame.boundingBox();
   const pipCanvasBox = await pipCanvas.boundingBox();
   assert.ok(pipBox && pipCanvasBox);
@@ -291,6 +362,10 @@ try {
   assert.ok(Math.abs(pipCanvasBox.height - pipBox.height) <= 1);
   await page.waitForTimeout(250);
   await page.screenshot({ path: pipScreenshotPath, fullPage: false });
+  await closePreview.click();
+  await pipFrame.waitFor({ state: "detached" });
+  await cameraPreviewButton.click();
+  await pipFrame.waitFor();
 
   const viewfinderButton = page.getByRole("button", {
     name: "Viewfinder",
@@ -308,6 +383,7 @@ try {
   await page.screenshot({ path: viewfinderScreenshotPath, fullPage: false });
   await viewfinderButton.click();
   await page.locator(".cw-stage-fovbar").waitFor({ state: "detached" });
+  await page.getByRole("tab", { name: "Characters", exact: true }).click();
   await cameraPreviewButton.click();
   await staticMode.click();
   await bottom.waitFor({ state: "detached" });

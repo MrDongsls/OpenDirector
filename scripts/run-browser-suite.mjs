@@ -59,6 +59,19 @@ const workflows = [
     name: "director stage pointer alignment",
     script: "tests/browser/director_stage_pointer_alignment.mjs",
   },
+  {
+     name: "director stage camera preset",
+     script: "tests/browser/director_stage_camera_preset.mjs",
+   },
+  {
+    name: "director stage camera preset (zh-CN)",
+     script: "tests/browser/director_stage_camera_preset.mjs",
+     env: { DIRECTOR_STAGE_LOCALE: "zh-CN" },
+  },
+  {
+    name: "director stage pointer alignment",
+    script: "tests/browser/director_stage_pointer_alignment.mjs",
+  },
   { name: "canvas crop", script: "tests/browser/canvas_crop.mjs" },
   { name: "canvas text Markdown", script: "tests/browser/canvas_text_markdown.mjs" },
   {

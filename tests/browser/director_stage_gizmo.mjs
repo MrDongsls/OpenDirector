@@ -17,6 +17,11 @@ const L = {
     positionX: "Position X",
     positionY: "Position Y",
     positionZ: "Position Z",
+    camera: "Camera 1",
+    viewpoint: "Viewpoint",
+    cameraX: "Camera X",
+    targetX: "Target X",
+    object: "Person 1",
     rotationX: "Rotation X",
     undo: "Undo",
     redo: "Redo",
@@ -33,6 +38,11 @@ const L = {
     positionX: "位置 X",
     positionY: "位置 Y",
     positionZ: "位置 Z",
+    camera: "摄像机 1",
+    viewpoint: "视点",
+    cameraX: "机位 X",
+    targetX: "目标 X",
+    object: "人物 1",
     rotationX: "旋转 X",
     undo: "撤销",
     redo: "重做",
@@ -122,39 +132,36 @@ const keyframeCount = (document) =>
     0,
   );
 
-/** Grabs the translate X handle of the placement gizmo. The default subject
- * sits at the world origin under a camera at (5, 3.5, 7) looking at (0, 1, 0),
- * so the handle projects near the viewport's horizontal center, three fifths
- * down, offset along the screen projection of the world X axis. */
+/** Grabs the translate X handle of the placement gizmo. Project the handle
+ * from the director camera instead of relying on a fixed screen offset; the
+ * latter silently regresses when the director view is not the stage camera. */
 const xHandlePoint = async () => {
   const box = await page
     .locator(".cw-stage-scene")
     .boundingBox();
   assert.ok(box, "stage viewport is visible");
-  const width = box.width,
-    height = box.height;
-  const center = { x: box.x + width / 2, y: box.y + height * 0.625 };
-  const direction = { x: 0.98, y: 0.19 };
+  const center = projectToViewport(0, 0, 0, box);
+  const ahead = projectToViewport(1, 0, 0, box);
+  const direction = { x: ahead.x - center.x, y: ahead.y - center.y };
   const length = Math.hypot(direction.x, direction.y);
   return {
     from: {
-      x: center.x + (direction.x / length) * width * 0.03,
-      y: center.y + (direction.y / length) * width * 0.03,
+      x: center.x + (direction.x / length) * box.width * 0.03,
+      y: center.y + (direction.y / length) * box.width * 0.03,
     },
-    by: width * 0.11,
+    by: box.width * 0.11,
+    direction: { x: direction.x / length, y: direction.y / length },
   };
 };
 
 /** Drags the X translate handle rightwards along its own screen axis. */
 const dragXHandle = async () => {
-  const { from, by } = await xHandlePoint();
-  const direction = { x: 0.98, y: 0.19 };
-  const length = Math.hypot(direction.x, direction.y);
+  const { from, by, direction } = await xHandlePoint();
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
   await page.mouse.move(
-    from.x + (direction.x / length) * by,
-    from.y + (direction.y / length) * by,
+    from.x + direction.x * by,
+    from.y + direction.y * by,
     { steps: 12 },
   );
   await page.mouse.up();
@@ -162,10 +169,10 @@ const dragXHandle = async () => {
 
 const positionX = () => page.getByLabel(L.positionX, { exact: true });
 
-/** Default stage camera every fresh stage starts with: the projection helper
- * below mirrors its look-at math. */
+/** Director view every fresh stage opens with. The projection helper below
+ * mirrors the render camera's look-at math. */
 const DEFAULT_CAMERA = {
-  eye: { x: 5, y: 3.5, z: 7 },
+  eye: { x: 8, y: 6, z: 10 },
   target: { x: 0, y: 1, z: 0 },
   fov: 45,
 };
@@ -373,6 +380,57 @@ try {
   await waitForFieldValue(L.positionY, 0);
   await page.waitForTimeout(150);
 
+  // Camera helpers are scene entities, not tree-only controls. Clicking the
+  // projected camera endpoint must select the camera from the director view.
+  const stageBox = await page.locator(".cw-stage-scene").boundingBox();
+  assert.ok(stageBox, "stage viewport is visible for camera selection");
+  const cameraEndpoint = projectToViewport(5, 3.5, 7, stageBox);
+  await page.mouse.click(cameraEndpoint.x, cameraEndpoint.y);
+  await page.waitForFunction(() =>
+    document.querySelector(
+      ".cw-stage-camera-tree-row:not(.cw-stage-camera-tree-row-child) button[aria-selected=\"true\"]",
+    ) !== null,
+  );
+  assert.match(
+    await page
+      .locator(
+        ".cw-stage-camera-tree-row:not(.cw-stage-camera-tree-row-child) button[aria-selected=\"true\"]",
+      )
+      .textContent(),
+    new RegExp(L.camera),
+    "clicking the camera body selects its camera endpoint",
+  );
+
+  // Cameras and viewpoints are independent scene selections. Both expose
+  // only translation, while ordinary subjects keep all three gizmo modes.
+  const stageTree = page.locator(".cw-stage-tree");
+  await stageTree.getByRole("button", { name: L.camera, exact: true }).click();
+  assert.equal(await moveGizmo.getAttribute("aria-pressed"), "true");
+  await rotateGizmo.click();
+  assert.equal(await moveGizmo.getAttribute("aria-pressed"), "true");
+  assert.equal(await rotateGizmo.getAttribute("aria-pressed"), "false");
+  await stageTree
+    .getByRole("button", { name: L.viewpoint, exact: true })
+    .click();
+  assert.equal(await moveGizmo.getAttribute("aria-pressed"), "true");
+
+  // Moving the viewpoint is a stage edit, not a director-view navigation.
+  // The readout belongs to the orbit camera and must remain unchanged while
+  // the camera output's target changes.
+  const directorReadout = page.locator(".cw-stage-viewreadout");
+  await directorReadout.waitFor();
+  const beforeViewpointMove = await directorReadout.textContent();
+  await page.getByLabel(L.targetX, { exact: true }).fill("2");
+  await page.waitForTimeout(120);
+  assert.equal(
+    await directorReadout.textContent(),
+    beforeViewpointMove,
+    "viewpoint edits do not move the director view",
+  );
+  await page.getByLabel(L.targetX, { exact: true }).fill("0");
+  await stageTree.getByRole("button", { name: L.object, exact: true }).click();
+  await moveGizmo.click();
+
   await dragXHandle();
   const dragged = Number(await positionX().inputValue());
   // A miss would orbit the camera instead; the persisted-pose assertions
@@ -501,6 +559,30 @@ try {
     .click();
   await waitForFieldValue(L.positionX, posedDragged);
 
+  // Orbiting is a director-view inspection gesture, not a camera edit. The
+  // camera and viewpoint gizmos are the only controls allowed to author the
+  // camera pose.
+  const beforeOrbitCameraX = await fieldNumber(L.cameraX);
+  const beforeOrbitTargetX = await fieldNumber(L.targetX);
+  const orbitBox = await page.locator(".cw-stage-scene").boundingBox();
+  assert.ok(orbitBox, "stage viewport is visible for orbit regression");
+  const orbitY = orbitBox.y + orbitBox.height * 0.82;
+  await page.mouse.move(orbitBox.x + orbitBox.width * 0.82, orbitY);
+  await page.mouse.down();
+  await page.mouse.move(orbitBox.x + orbitBox.width * 0.68, orbitY, {
+    steps: 8,
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(100);
+  assert.ok(
+    Math.abs((await fieldNumber(L.cameraX)) - beforeOrbitCameraX) < 0.01,
+    "orbiting leaves the camera endpoint unchanged",
+  );
+  assert.ok(
+    Math.abs((await fieldNumber(L.targetX)) - beforeOrbitTargetX) < 0.01,
+    "orbiting leaves the viewpoint endpoint unchanged",
+  );
+
   await page.getByRole("button", { name: L.apply, exact: true }).click();
   const applied = await until((snapshot) => {
     const result = director(snapshot, undoItemId);
@@ -558,6 +640,8 @@ try {
         "drags author no keyframes beyond the recorded frame",
         "dragging after a recorded keyframe poses at the playhead",
         "one undo reverts the pose drag",
+        "camera and viewpoint selections force translate-only gizmos",
+        "orbiting the director view does not edit camera endpoints",
         "dragging leaves the camera pose untouched",
         "no page errors",
       ],

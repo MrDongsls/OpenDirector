@@ -28,9 +28,12 @@ import {
   probeStageAsset,
   sampleStage,
   sampleStageCamera,
+  sampleStageCameraEndpoint,
+  stageCameraEndpointId,
   editStageObjectAt,
   editStageObjectPlacement,
   editStageCameraAt,
+  editStageCameraEndpointAt,
   captureStageFrame,
   stageFrameTimes,
   removeStageFrame,
@@ -45,6 +48,7 @@ import {
 import type {
   LocalStageDocument,
   StageCamera,
+  StageCameraEndpointKind,
   StageCameraChannels,
   StageSample,
   StageSampleObject,
@@ -62,6 +66,7 @@ import {
 import type {
   DirectorStageLeftTab,
   DirectorStageInteractionMode,
+  DirectorStageCameraPreset,
   DirectorStageViewAction,
 } from "./directorStageViewState";
 import {
@@ -140,6 +145,15 @@ interface ImportedRuntime {
   activeClip?: THREE.AnimationClip;
   restPose: RestPose[];
 }
+interface CameraHelperRuntime {
+  root: THREE.Group;
+  camera: THREE.Group;
+  viewpoint: THREE.Group;
+  cameraHitTarget: THREE.Mesh;
+  viewpointHitTarget: THREE.Mesh;
+  sightLine: THREE.LineSegments;
+  frustum: THREE.LineSegments;
+}
 interface StageRuntime {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -152,6 +166,9 @@ interface StageRuntime {
   grid: THREE.GridHelper;
   /** Viewport-local helper group (motion paths, height guides). */
   helpers: THREE.Group;
+  /** Director-only camera and viewpoint handles. */
+  cameraHelpers: THREE.Group;
+  cameraRigs: Map<string, CameraHelperRuntime>;
   imported: Map<string, ImportedRuntime>;
   /** In-flight or resolved loads keyed by pinned asset id or source URL, so
    * concurrent effect runs share one load and one set of GPU resources. */
@@ -195,6 +212,16 @@ function setStageGroundReveal(ground: THREE.Mesh, reveal: boolean) {
   material.needsUpdate = true;
 }
 
+/** The orbit camera is a viewport concern, never the persisted stage camera. */
+const DEFAULT_DIRECTOR_VIEW: StageCamera = {
+  position: { x: 8, y: 6, z: 10 },
+  target: { x: 0, y: 1, z: 0 },
+  fov: 45,
+};
+const CAMERA_HELPER_DISPLAY_SCALE = 0.25;
+const VIEWPOINT_HELPER_DISPLAY_SCALE = 0.4;
+const CAMERA_ENDPOINT_HIT_RADIUS = 0.24;
+const VIEWPOINT_ENDPOINT_HIT_RADIUS = 0.2;
 function applyStageEnvironment(
   scene: THREE.Scene,
   descriptor: StageEnvironmentDescriptor,
@@ -424,10 +451,7 @@ function materializeStageThumbnails(
   return changed ? { ...stage, objects } : stage;
 }
 
-type CameraPresetId =
-  | "frontMedium" | "frontClose" | "frontWide" | "sideTrack" | "sideClose"
-  | "backMedium" | "overheadWide" | "highAngle" | "lowAngle" | "lowWide"
-  | "overShoulder" | "bird" | "dutch";
+type CameraPresetId = DirectorStageCameraPreset;
 const CAMERA_PRESETS: Record<CameraPresetId, { offset: Vector3Value; fov: number; roll?: number }> = {
   frontMedium: { offset: { x: 0, y: 0.6, z: 6 }, fov: 45 },
   frontClose: { offset: { x: 0, y: 0.5, z: 2.6 }, fov: 40 },
@@ -443,6 +467,36 @@ const CAMERA_PRESETS: Record<CameraPresetId, { offset: Vector3Value; fov: number
   bird: { offset: { x: 0, y: 13, z: 0.01 }, fov: 45 },
   dutch: { offset: { x: 0, y: 0.8, z: 5.5 }, fov: 45, roll: 0.32 },
 };
+function cameraPresetPoseForObject(
+  preset: CameraPresetId,
+  subject: Pick<StageSampleObject, "kind" | "position" | "rotation">,
+): StageCamera {
+  const spec = CAMERA_PRESETS[preset];
+  const center = {
+    x: subject.position.x,
+    y: subject.position.y + (subject.kind === "person" ? 1.3 : 0.5),
+    z: subject.position.z,
+  };
+  // Preset offsets describe a camera in the object's local X/Z plane. Rotate
+  // that offset by the sampled subject yaw so "front" follows the subject.
+  const cos = Math.cos(subject.rotation.y);
+  const sin = Math.sin(subject.rotation.y);
+  const offset = {
+    x: spec.offset.x * cos + spec.offset.z * sin,
+    y: spec.offset.y,
+    z: -spec.offset.x * sin + spec.offset.z * cos,
+  };
+  return {
+    position: {
+      x: center.x + offset.x,
+      y: center.y + offset.y,
+      z: center.z + offset.z,
+    },
+    target: center,
+    fov: spec.fov,
+    ...(spec.roll !== undefined ? { roll: spec.roll } : {}),
+  };
+}
 const axes = ["x", "y", "z"] as const;
 const titles: Record<StageObject["kind"], MessageKey> = {
   person: "editors.stage.ui.objectPerson",
@@ -702,6 +756,101 @@ function poseJoints(group: THREE.Object3D, value: StageSampleObject) {
     if (elbow) elbow.rotation.x = pose[`${side}Elbow`];
   }
 }
+function updateLineSegments(
+  line: THREE.LineSegments,
+  points: THREE.Vector3[],
+) {
+  line.geometry.dispose();
+  line.geometry = new THREE.BufferGeometry().setFromPoints(points);
+}
+function buildCameraRigHelper(cameraId: string): CameraHelperRuntime {
+  const root = new THREE.Group();
+  root.userData.cameraRigId = cameraId;
+
+  const camera = new THREE.Group();
+  camera.userData.cameraEndpoint = {
+    id: stageCameraEndpointId(cameraId, "camera"),
+    cameraId,
+    kind: "camera" as const,
+  };
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.36, 0.24, 0.44),
+    new THREE.MeshBasicMaterial({ color: 0x8ea6ff }),
+  );
+  body.position.z = -0.08;
+  camera.add(body);
+  camera.scale.setScalar(CAMERA_HELPER_DISPLAY_SCALE);
+
+  // Keep the visual marker small without making it frustratingly precise to
+  // select. These transparent meshes are director-only hit targets; their
+  // endpoint metadata is the same stable identity used by the visible group.
+  const cameraHitTarget = new THREE.Mesh(
+    new THREE.SphereGeometry(CAMERA_ENDPOINT_HIT_RADIUS, 8, 6),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    }),
+  );
+  cameraHitTarget.userData.cameraEndpoint = camera.userData.cameraEndpoint;
+
+  const viewpoint = new THREE.Group();
+  viewpoint.userData.cameraEndpoint = {
+    id: stageCameraEndpointId(cameraId, "viewpoint"),
+    cameraId,
+    kind: "viewpoint" as const,
+  };
+  viewpoint.add(
+    new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffc861 }),
+    ),
+  );
+  viewpoint.scale.setScalar(VIEWPOINT_HELPER_DISPLAY_SCALE);
+  const viewpointHitTarget = new THREE.Mesh(
+    new THREE.SphereGeometry(VIEWPOINT_ENDPOINT_HIT_RADIUS, 8, 6),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    }),
+  );
+  viewpointHitTarget.userData.cameraEndpoint = viewpoint.userData.cameraEndpoint;
+
+  const sightLine = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0xffc861 }),
+  );
+  const frustum = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0x8ea6ff }),
+  );
+  root.add(camera, viewpoint, cameraHitTarget, viewpointHitTarget, sightLine, frustum);
+  return {
+    root,
+    camera,
+    viewpoint,
+    cameraHitTarget,
+    viewpointHitTarget,
+    sightLine,
+    frustum,
+  };
+}
+function cameraEndpointOf(
+  object: THREE.Object3D,
+): { id: string; cameraId: string; kind: StageCameraEndpointKind } | undefined {
+  const value: unknown = object.userData.cameraEndpoint;
+  if (typeof value !== "object" || value === null) return undefined;
+  if (!("id" in value) || typeof value.id !== "string") return undefined;
+  if (!("cameraId" in value) || typeof value.cameraId !== "string")
+    return undefined;
+  if (
+    !("kind" in value) ||
+    (value.kind !== "camera" && value.kind !== "viewpoint")
+  )
+    return undefined;
+  return { id: value.id, cameraId: value.cameraId, kind: value.kind };
+}
 function disposeObject(object: THREE.Object3D) {
   const materials = new Set<THREE.Material>();
   object.traverse((child) => {
@@ -714,6 +863,30 @@ function disposeObject(object: THREE.Object3D) {
     }
   });
   materials.forEach((material) => material.dispose());
+}
+/**
+ * Camera output is a clean render pass. Director-only layers stay available
+ * for orbit editing, but never leak into a viewfinder, PiP frame, still, or
+ * video frame.
+ */
+function hideDirectorOnlyLayers(runtime: StageRuntime): () => void {
+  const layers = [
+    runtime.cameraHelpers,
+    runtime.helpers,
+    runtime.grid,
+    runtime.translate.getHelper(),
+    runtime.rotate.getHelper(),
+    runtime.scale.getHelper(),
+  ];
+  const visibility = layers.map((layer) => [layer, layer.visible] as const);
+  layers.forEach((layer) => {
+    layer.visible = false;
+  });
+  return () => {
+    visibility.forEach(([layer, visible]) => {
+      layer.visible = visible;
+    });
+  };
 }
 /** Removes the translate gizmo's center view-plane handle. Unlike the plane
  * quads (showXY/showYZ/showXZ hide their visuals and pickers together), the
@@ -734,7 +907,7 @@ function removeCenterHandle(controls: TransformControls) {
     for (const child of [...group.children])
       if (child.name === "XYZ") group.remove(child);
 }
-function setCamera(runtime: StageRuntime, value: StageCamera) {
+function setDirectorView(runtime: StageRuntime, value: StageCamera) {
   runtime.camera.position.set(
     value.position.x,
     value.position.y,
@@ -750,11 +923,21 @@ function applyRoll(camera: THREE.PerspectiveCamera, value: StageCamera) {
   camera.lookAt(value.target.x, value.target.y, value.target.z);
   camera.rotateZ(value.roll ?? 0);
 }
-function displayPose(runtime: StageRuntime, pose: StageSample) {
-  setCamera(runtime, pose.camera);
+function displayPose(
+  runtime: StageRuntime,
+  pose: Pick<StageSample, "objects">,
+) {
+  // `runtime.camera` is the director's orbit camera. Stage-camera output uses
+  // poseCameraFor() in its own render pass; sampling the document must never
+  // reframe the director view when a camera or viewpoint is edited.
   // The gizmo owns object transforms while a drag is in flight; an async
   // GLTF-load or undo re-pose must not stomp it.
-  if (runtime.translate.dragging || runtime.rotate.dragging) return;
+  if (
+    runtime.translate.dragging ||
+    runtime.rotate.dragging ||
+    runtime.scale.dragging
+  )
+    return;
   for (const child of runtime.root.children) {
     const data = pose.objects.find(
       (item) => item.id === child.userData.objectId,
@@ -878,10 +1061,32 @@ export function DirectorStage({
   const history = useRef(historyState);
   const [viewState, dispatchView] = useReducer(
     directorStageViewReducer,
-    createDirectorStageViewState(stage.objects[0]?.id ?? null),
+    createDirectorStageViewState(
+      stage.objects[0]?.id ?? null,
+      stage.activeCameraId,
+    ),
   );
-  const selected = viewState.selectedObjectId;
+  const selection = viewState.selection;
+  const selected = selection?.kind === "object" ? selection.objectId : null;
+  const selectedCamera =
+    selection?.kind === "camera" || selection?.kind === "viewpoint"
+      ? selection
+      : null;
   const cameraPreview = viewState.cameraPreview;
+  const previewCameraId =
+    viewState.cameraPreviewCameraId &&
+    stage.cameras.some(
+      (camera) => camera.id === viewState.cameraPreviewCameraId,
+    )
+      ? viewState.cameraPreviewCameraId
+      : stage.activeCameraId;
+  const previewAspectRatio = (() => {
+    const ratio =
+      stage.cameras.find((camera) => camera.id === previewCameraId)
+        ?.aspectRatio ?? stage.aspectRatio;
+    const size = stageOutputSize(ratio);
+    return size.width / size.height;
+  })();
   const previewMode = viewState.previewMode;
   const splitView = viewState.splitView.kind === "open";
   const splitRatio = viewState.splitView.ratio;
@@ -899,6 +1104,10 @@ export function DirectorStage({
       : null;
   const pendingKind = pendingPlacement?.objectKind ?? null;
   const pendingPlacementSourceId = pendingPlacement?.sourceObjectId ?? null;
+  const pendingCameraPreset =
+    viewState.interactionMode.kind === "cameraPreset"
+      ? viewState.interactionMode.preset
+      : null;
   const assetRole = viewState.assetRole;
   const leftTab = viewState.leftTab;
   const treeGroups = viewState.treeGroups;
@@ -914,14 +1123,24 @@ export function DirectorStage({
   const setView = (action: DirectorStageViewAction) => dispatchView(action);
   const setSelected = (objectId: string | null) =>
     setView({ type: "selectObject", objectId });
+  const selectCamera = (cameraId: string) =>
+    setView({ type: "selectCamera", cameraId });
+  const selectViewpoint = (cameraId: string) =>
+    setView({ type: "selectViewpoint", cameraId });
   const setPendingKind = (
-      objectKind: StageObject["kind"] | null,
-      sourceObjectId: string | null = null,
-    ) =>
+    objectKind: StageObject["kind"] | null,
+    sourceObjectId: string | null = null,
+  ) =>
     setView(
       objectKind
         ? { type: "armPlacement", objectKind, sourceObjectId }
         : { type: "cancelPlacement" },
+    );
+  const setPendingCameraPreset = (preset: CameraPresetId | null) =>
+    setView(
+      preset
+        ? { type: "armCameraPreset", preset }
+        : { type: "cancelCameraPreset" },
     );
   const setSplitRatio = (ratio: number) =>
     setView({ type: "setSplitRatio", ratio });
@@ -982,6 +1201,11 @@ export function DirectorStage({
   pendingPlacementRef.current = pendingPlacement;
   const viewSettingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const viewMenuRef = useRef<HTMLDivElement | null>(null);
+  const pendingCameraPresetRef = useRef<CameraPresetId | null>(null);
+  pendingCameraPresetRef.current = pendingCameraPreset;
+  const cameraPresetPlacementRef = useRef<
+    (preset: CameraPresetId, objectId: string) => void
+  >(() => {});
   const placeRef = useRef<(x: number, z: number) => void>(() => {});
   const splitRef = useRef({
     open: false,
@@ -995,6 +1219,8 @@ export function DirectorStage({
   viewRef.current = viewFlags;
   const cameraPreviewRef = useRef(false);
   cameraPreviewRef.current = cameraPreview;
+  const previewCameraIdRef = useRef<string | null>(null);
+  previewCameraIdRef.current = previewCameraId;
   const viewfinderRef = useRef(false);
   viewfinderRef.current = viewfinder;
   const walkRef = useRef(false);
@@ -1056,7 +1282,13 @@ export function DirectorStage({
   const stageEnvironmentRef = useRef(stageEnvironment);
   stageEnvironmentRef.current = stageEnvironment;
   const object = sampled.objects.find((item) => item.id === selected);
-  const cameraValue = sampled.camera;
+  const selectedCameraId =
+    selectedCamera &&
+    stage.cameras.some((camera) => camera.id === selectedCamera.cameraId)
+      ? selectedCamera.cameraId
+      : null;
+  const cameraEditId = selectedCameraId ?? sampled.cameraId;
+  const cameraValue = sampleStageCamera(stage, cameraEditId, time, t);
   const outputSize = stageOutputSize(stage.aspectRatio);
   const exportSize = stageOutputSize(stage.aspectRatio, exportClarity);
   // The frame sits centered at a comfortable size (a 16:9 stage is 900px
@@ -1158,7 +1390,8 @@ export function DirectorStage({
     if (renderProgress !== null) return;
     if (
       runtime.current?.translate.dragging ||
-      runtime.current?.rotate.dragging
+      runtime.current?.rotate.dragging ||
+      runtime.current?.scale.dragging
     )
       return;
     installHistory(navigateStageHistory(history.current, direction));
@@ -1173,11 +1406,21 @@ export function DirectorStage({
     edit((current) =>
       editStageCameraAt(
         current,
-        sampleStage(current, timeRef.current).cameraId,
+        selectedCameraId &&
+        current.cameras.some((camera) => camera.id === selectedCameraId)
+          ? selectedCameraId
+          : sampleStage(current, timeRef.current).cameraId,
         timeRef.current,
         patch,
       ),
     );
+  const selectCameraEndpoint = (
+    cameraId: string,
+    kind: StageCameraEndpointKind,
+  ) => {
+    if (kind === "camera") selectCamera(cameraId);
+    else selectViewpoint(cameraId);
+  };
   const updateClip = (id: string, patch: Partial<StageMotionClip>) => {
     if (object)
       editObject({
@@ -1471,6 +1714,9 @@ export function DirectorStage({
     const helpers = new THREE.Group();
     helpers.name = "stage-helpers";
     scene.add(helpers);
+    const cameraHelpers = new THREE.Group();
+    cameraHelpers.name = "stage-camera-helpers";
+    scene.add(cameraHelpers);
     const current: StageRuntime = {
       renderer,
       scene,
@@ -1482,12 +1728,15 @@ export function DirectorStage({
       root,
       grid,
       helpers,
+      cameraHelpers,
+      cameraRigs: new Map(),
       imported: new Map(),
       assetCache: new Map(),
     };
     runtime.current = current;
     applyStageEnvironment(scene, stageEnvironmentRef.current, undefined, renderer);
-    setCamera(current, sampleStage(stageRef.current, timeRef.current).camera);
+    setDirectorView(current, sampleStage(stageRef.current, timeRef.current).camera);
+    setDirectorView(current, DEFAULT_DIRECTOR_VIEW);
     const resize = () => {
       // The viewport fills its panel; the stage aspect shows up in the
       // captured still and the MP4, not in the free-form preview frame.
@@ -1514,7 +1763,11 @@ export function DirectorStage({
     };
     const indicator = document.createElement("div");
     indicator.className = "cw-stage-viewinfo";
+    const mode = document.createElement("strong");
+    mode.className = "cw-stage-viewmode";
+    mode.textContent = t("editors.stage.ui.directorView");
     const readout = document.createElement("span");
+    readout.className = "cw-stage-viewreadout";
     const resetView = document.createElement("button");
     resetView.type = "button";
     resetView.textContent = t("editors.stage.ui.resetView");
@@ -1525,7 +1778,7 @@ export function DirectorStage({
       camera.updateProjectionMatrix();
       controls.update();
     });
-    indicator.append(readout, resetView);
+    indicator.append(mode, readout, resetView);
     container.append(indicator);
     const nameLayer = document.createElement("div");
     nameLayer.className = "cw-stage-names";
@@ -1578,27 +1831,14 @@ export function DirectorStage({
       }
     };
     let lastReadout = "";
-    let gestureCameraId: string | null = null;
+    // Orbiting inspects the stage from a director viewpoint; it must not
+    // author a camera pose. Camera position and direction are edited only by
+    // the camera and viewpoint translation endpoints below.
     const orbitStart = () => {
       setPlaying(false);
       playingRef.current = false;
-      gestureCameraId = sampleStage(stageRef.current, timeRef.current).cameraId;
-    };
-    const orbitEnd = () => {
-      if (!gestureCameraId) return;
-      const id = gestureCameraId;
-      gestureCameraId = null;
-      const pose = {
-        position: vector(camera.position),
-        target: vector(controls.target),
-        fov: camera.fov,
-      };
-      gestureEdit.current((current) =>
-        editStageCameraAt(current, id, timeRef.current, pose),
-      );
     };
     controls.addEventListener("start", orbitStart);
-    controls.addEventListener("end", orbitEnd);
     let dragTarget: THREE.Object3D | null = null;
     // Both gizmos share one handler; whichever starts a drag disables its
     // sibling so the released pointer cannot also grab the other gizmo.
@@ -1609,7 +1849,6 @@ export function DirectorStage({
           dragTarget = gizmo.object;
           // The same pointerdown also started an orbit gesture; a drag frozen
           // before any camera move must not commit a pose when it ends.
-          gestureCameraId = null;
           setPlaying(false);
           playingRef.current = false;
           controls.enabled = false;
@@ -1626,6 +1865,19 @@ export function DirectorStage({
         const group = dragTarget;
         dragTarget = null;
         if (!group || gizmo.object !== group) return;
+        const endpoint = cameraEndpointOf(group);
+        if (endpoint) {
+          gestureEdit.current((current) =>
+            editStageCameraEndpointAt(
+              current,
+              endpoint.cameraId,
+              endpoint.kind,
+              timeRef.current,
+              vector(group.position),
+            ),
+          );
+          return;
+        }
         const item = stageRef.current.objects.find(
           (entry) => entry.id === group.userData.objectId,
         );
@@ -1671,7 +1923,36 @@ export function DirectorStage({
         (-(event.clientY - rect.top) / rect.height) * 2 + 1,
       );
       raycaster.setFromCamera(pointer, camera);
-      // An armed preset lands where the click meets the ground plane;
+      const findObjectHit = () => {
+        for (const intersection of raycaster.intersectObjects(
+          root.children,
+          true,
+        )) {
+          let candidate: THREE.Object3D | undefined = intersection.object;
+          while (
+            candidate &&
+            typeof candidate.userData.objectId !== "string"
+          )
+            candidate = candidate.parent ?? undefined;
+          if (candidate && typeof candidate.userData.objectId === "string")
+            return candidate;
+        }
+        return undefined;
+      };
+      // Camera presets are a two-step interaction: choose the preset first,
+      // then choose the scene subject that owns the new camera. Empty-space
+      // clicks and camera guides do not consume the armed preset.
+      if (pendingCameraPresetRef.current && !viewfinderRef.current) {
+        const objectHit = findObjectHit();
+        const objectId = objectHit?.userData.objectId;
+        if (typeof objectId === "string") {
+          const preset = pendingCameraPresetRef.current;
+          pendingCameraPresetRef.current = null;
+          cameraPresetPlacementRef.current(preset, objectId);
+        }
+        return;
+      }
+      // An armed object placement lands where the click meets the ground plane;
       // placement stays disabled while the viewfinder reframes the view.
       if (pendingPlacementRef.current && !viewfinderRef.current) {
         const hit = raycaster.ray.intersectPlane(
@@ -1681,13 +1962,35 @@ export function DirectorStage({
         if (hit) placeRef.current(hit.x, hit.z);
         return;
       }
-      let found: THREE.Object3D | undefined = raycaster.intersectObjects(
-        root.children,
+      let found: THREE.Object3D | undefined;
+      for (const intersection of raycaster.intersectObjects(
+        [...root.children, ...cameraHelpers.children],
         true,
-      )[0]?.object;
-      while (found && !found.userData.objectId)
-        found = found.parent ?? undefined;
-      if (found) setSelected(found.userData.objectId as string);
+      )) {
+        let candidate: THREE.Object3D | undefined = intersection.object;
+        while (
+          candidate &&
+          !candidate.userData.objectId &&
+          !cameraEndpointOf(candidate)
+        )
+          candidate = candidate.parent ?? undefined;
+        // Director-only guide lines and frustum edges are deliberately
+        // visible but not selectable. Keep searching until a stable scene
+        // identity is found instead of letting a guide swallow the click.
+        if (candidate) {
+          found = candidate;
+          break;
+        }
+      }
+      if (found) {
+        const endpoint = cameraEndpointOf(found);
+        if (endpoint)
+          endpoint.kind === "camera"
+            ? selectCamera(endpoint.cameraId)
+            : selectViewpoint(endpoint.cameraId);
+        else if (typeof found.userData.objectId === "string")
+          setSelected(found.userData.objectId);
+      }
     };
     const pointerCancel = () => {
       start = null;
@@ -1752,11 +2055,18 @@ export function DirectorStage({
     renderer.domElement.addEventListener("webglcontextlost", contextLost);
     let frame = 0;
     const poseCameraFor = (cameraId?: string, aspect?: number) => {
-      const size = stageOutputSize(stageRef.current.aspectRatio);
+      const currentStage = stageRef.current;
+      const size = stageOutputSize(currentStage.aspectRatio);
       const pose = cameraId
-        ? sampleStageCamera(stageRef.current, cameraId, timeRef.current, t)
-        : sampleStage(stageRef.current, timeRef.current).camera;
-      pipCamera.aspect = aspect ?? size.width / size.height;
+        ? sampleStageCamera(currentStage, cameraId, timeRef.current, t)
+        : sampleStage(currentStage, timeRef.current).camera;
+      const cameraAspect = cameraId
+        ? stageOutputSize(
+            currentStage.cameras.find((camera) => camera.id === cameraId)
+              ?.aspectRatio ?? currentStage.aspectRatio,
+          )
+        : size;
+      pipCamera.aspect = aspect ?? cameraAspect.width / cameraAspect.height;
       pipCamera.fov = liveFovRef.current ?? pose.fov;
       pipCamera.position.set(pose.position.x, pose.position.y, pose.position.z);
       applyRoll(pipCamera, pose);
@@ -1831,13 +2141,18 @@ export function DirectorStage({
         renderer.render(scene, camera);
         renderer.setViewport(splitWidth, 0, width - splitWidth, height);
         renderer.setScissor(splitWidth, 0, width - splitWidth, height);
-        setStageGroundReveal(ground, false);
-        renderer.render(
-          scene,
-          viewfinderRef.current
-            ? camera
-            : poseCameraFor(cameraId ?? undefined, paneAspect),
-        );
+        const restoreDirectorLayers = hideDirectorOnlyLayers(current);
+        try {
+          setStageGroundReveal(ground, false);
+          renderer.render(
+            scene,
+            viewfinderRef.current
+              ? camera
+              : poseCameraFor(cameraId ?? undefined, paneAspect),
+          );
+        } finally {
+          restoreDirectorLayers();
+        }
         renderer.setScissorTest(false);
         frame = requestAnimationFrame(render);
         return;
@@ -1845,15 +2160,22 @@ export function DirectorStage({
       // Viewfinder renders the stage camera as the main view; the preview
       // pass keeps the orbit view so the working frame is never lost.
       if (viewfinderRef.current) {
-        setStageGroundReveal(ground, false);
-        renderer.render(scene, poseCameraFor());
+        const restoreDirectorLayers = hideDirectorOnlyLayers(current);
+        try {
+          setStageGroundReveal(ground, false);
+          renderer.render(scene, poseCameraFor());
+        } finally {
+          restoreDirectorLayers();
+        }
       } else {
         setStageGroundReveal(ground, revealUnderground);
         renderer.render(scene, camera);
       }
       if (cameraPreviewRef.current && !viewfinderRef.current) {
         setStageGroundReveal(ground, false);
-        const previewCamera = poseCameraFor();
+        const previewCamera = poseCameraFor(
+          previewCameraIdRef.current ?? undefined,
+        );
         const cssWidth = renderer.domElement.clientWidth || renderer.domElement.width;
         const pixelRatio = renderer.domElement.width / Math.max(cssWidth, 1);
         const inspectorWidth = (cssWidth >= 1100 ? 300 : 260) * pixelRatio;
@@ -1868,7 +2190,12 @@ export function DirectorStage({
         // The main orbit pass populated the depth buffer. Clear only the
         // preview rectangle so the camera pass can draw its own scene.
         renderer.clearDepth();
-        renderer.render(scene, previewCamera);
+        const restoreDirectorLayers = hideDirectorOnlyLayers(current);
+        try {
+          renderer.render(scene, previewCamera);
+        } finally {
+          restoreDirectorLayers();
+        }
         if (pipContext) {
           const sourceX = Math.round(x);
           const sourceY = Math.round(
@@ -1923,7 +2250,6 @@ export function DirectorStage({
       cancelAnimationFrame(frame);
       observer.disconnect();
       controls.removeEventListener("start", orbitStart);
-      controls.removeEventListener("end", orbitEnd);
       translate.removeEventListener("dragging-changed", translateDragChanged);
       rotate.removeEventListener("dragging-changed", rotateDragChanged);
       scale.removeEventListener("dragging-changed", scaleDragChanged);
@@ -2002,6 +2328,103 @@ export function DirectorStage({
         });
     }
   }, [stage.objects, ready]);
+  useEffect(() => {
+    const current = runtime.current;
+    if (!current || !ready) return;
+    const cameraIds = new Set(stage.cameras.map((rig) => rig.id));
+    for (const [cameraId, helper] of current.cameraRigs) {
+      if (cameraIds.has(cameraId)) continue;
+      helper.root.removeFromParent();
+      disposeObject(helper.root);
+      current.cameraRigs.delete(cameraId);
+    }
+    for (const rig of stage.cameras) {
+      let helper = current.cameraRigs.get(rig.id);
+      if (!helper) {
+        helper = buildCameraRigHelper(rig.id);
+        current.cameraRigs.set(rig.id, helper);
+        current.cameraHelpers.add(helper.root);
+      }
+      const pose = sampleStageCamera(stage, rig.id, time, t);
+      const cameraEndpoint = sampleStageCameraEndpoint(
+        stage,
+        rig.id,
+        "camera",
+        time,
+        t,
+      );
+      const viewpointEndpoint = sampleStageCameraEndpoint(
+        stage,
+        rig.id,
+        "viewpoint",
+        time,
+        t,
+      );
+      const cameraPosition = new THREE.Vector3(
+        cameraEndpoint.position.x,
+        cameraEndpoint.position.y,
+        cameraEndpoint.position.z,
+      );
+      const viewpointPosition = new THREE.Vector3(
+        viewpointEndpoint.position.x,
+        viewpointEndpoint.position.y,
+        viewpointEndpoint.position.z,
+      );
+      helper.camera.position.copy(cameraPosition);
+      helper.camera.lookAt(viewpointPosition);
+      helper.cameraHitTarget.position.copy(cameraPosition);
+      helper.viewpoint.position.copy(viewpointPosition);
+      helper.viewpointHitTarget.position.copy(viewpointPosition);
+      updateLineSegments(helper.sightLine, [cameraPosition, viewpointPosition]);
+
+      const direction = viewpointPosition
+        .clone()
+        .sub(cameraPosition)
+        .normalize();
+      const upSeed =
+        Math.abs(direction.dot(new THREE.Vector3(0, 1, 0))) > 0.95
+          ? new THREE.Vector3(1, 0, 0)
+          : new THREE.Vector3(0, 1, 0);
+      const right = direction.clone().cross(upSeed).normalize();
+      const up = right.clone().cross(direction).normalize();
+      // The frustum is part of the camera marker, so keep its wireframe at
+      // the same 1/4 display scale as the camera body.
+      const distance =
+        Math.max(1.2, cameraPosition.distanceTo(viewpointPosition) * 0.35) *
+        CAMERA_HELPER_DISPLAY_SCALE;
+      const [ratioWidth, ratioHeight] = (rig.aspectRatio ?? stage.aspectRatio)
+        .split(":")
+        .map(Number);
+      const aspect = (ratioWidth ?? 16) / (ratioHeight ?? 9);
+      const halfHeight = distance * Math.tan(THREE.MathUtils.degToRad(pose.fov) / 2);
+      const halfWidth = halfHeight * aspect;
+      const center = cameraPosition.clone().addScaledVector(direction, distance);
+      const corners = [
+        center.clone().addScaledVector(right, halfWidth).addScaledVector(up, halfHeight),
+        center.clone().addScaledVector(right, -halfWidth).addScaledVector(up, halfHeight),
+        center.clone().addScaledVector(right, -halfWidth).addScaledVector(up, -halfHeight),
+        center.clone().addScaledVector(right, halfWidth).addScaledVector(up, -halfHeight),
+      ];
+      updateLineSegments(helper.frustum, [
+        cameraPosition,
+        corners[0]!,
+        cameraPosition,
+        corners[1]!,
+        cameraPosition,
+        corners[2]!,
+        cameraPosition,
+        corners[3]!,
+        corners[0]!,
+        corners[1]!,
+        corners[1]!,
+        corners[2]!,
+        corners[2]!,
+        corners[3]!,
+        corners[3]!,
+        corners[0]!,
+      ]);
+    }
+  }, [stage, time, ready, t]);
   useEffect(() => {
     const current = runtime.current;
     if (!current || !ready) return;
@@ -2164,6 +2587,40 @@ export function DirectorStage({
     });
   }, [selected, stage.objects, ready]);
   useEffect(() => {
+    const current = runtime.current;
+    if (!current) return;
+    for (const [cameraId, helper] of current.cameraRigs) {
+      const cameraSelected =
+        selectedCamera?.cameraId === cameraId &&
+        selectedCamera.kind === "camera";
+      const viewpointSelected =
+        selectedCamera?.cameraId === cameraId &&
+        selectedCamera.kind === "viewpoint";
+      helper.camera.traverse((child) => {
+        if (
+          child instanceof THREE.Mesh &&
+          child.material instanceof THREE.MeshBasicMaterial
+        )
+          child.material.color.set(cameraSelected ? 0xffffff : 0x8ea6ff);
+      });
+      helper.viewpoint.traverse((child) => {
+        if (
+          child instanceof THREE.Mesh &&
+          child.material instanceof THREE.MeshBasicMaterial
+        )
+          child.material.color.set(viewpointSelected ? 0xffffff : 0xffc861);
+      });
+      if (helper.sightLine.material instanceof THREE.LineBasicMaterial)
+        helper.sightLine.material.color.set(
+          viewpointSelected ? 0xffffff : 0xffc861,
+        );
+      if (helper.frustum.material instanceof THREE.LineBasicMaterial)
+        helper.frustum.material.color.set(
+          cameraSelected ? 0xffffff : 0x8ea6ff,
+        );
+    }
+  }, [selectedCamera, stage.cameras, ready]);
+  useEffect(() => {
     if (!runtime.current) return;
     runtime.current.controls.enabled =
       renderProgress === null && !viewfinder && !walkMode;
@@ -2184,17 +2641,35 @@ export function DirectorStage({
     const group = current.root.children.find(
       (child) => child.userData.objectId === selected,
     );
-    const attach = (gizmo: TransformControls, visible: boolean) => {
-      if (item && !item.locked && group && renderProgress === null && visible) {
+    const endpointGroup = selectedCameraId && selectedCamera
+      ? current.cameraRigs.get(selectedCameraId)?.[selectedCamera.kind]
+      : undefined;
+    const attach = (
+      gizmo: TransformControls,
+      visible: boolean,
+      target: THREE.Object3D | undefined,
+    ) => {
+      const allowed = selectedCamera
+        ? gizmo === current.translate
+        : !!item && !item.locked;
+      if (allowed && target && renderProgress === null && visible) {
         const helper = gizmo.getHelper();
         if (!helper.parent) current.scene.add(helper);
-        gizmo.attach(group);
+        gizmo.attach(target);
       } else gizmo.detach();
     };
-    attach(current.translate, activeGizmo === "translate");
-    attach(current.rotate, activeGizmo === "rotate");
-    attach(current.scale, activeGizmo === "scale");
-  }, [selected, stage.objects, ready, renderProgress, activeGizmo]);
+    attach(current.translate, activeGizmo === "translate", endpointGroup ?? group);
+    attach(current.rotate, activeGizmo === "rotate", group);
+    attach(current.scale, activeGizmo === "scale", group);
+  }, [
+    selected,
+    selectedCamera,
+    selectedCameraId,
+    stage.objects,
+    ready,
+    renderProgress,
+    activeGizmo,
+  ]);
   useEffect(() => {
     if (!runtime.current) return;
     const size = stageOutputSize(stage.aspectRatio);
@@ -2389,22 +2864,39 @@ export function DirectorStage({
       };
     return { x: 0, y: 1, z: 0 };
   };
-  const applyCameraPreset = (preset: CameraPresetId) => {
-    const center = presetCenter();
-    const spec = CAMERA_PRESETS[preset];
-    gestureEdit.current((doc) =>
-      editStageCameraAt(doc, doc.activeCameraId, timeRef.current, {
-        position: {
-          x: center.x + spec.offset.x,
-          y: center.y + spec.offset.y,
-          z: center.z + spec.offset.z,
-        },
-        target: center,
-        fov: spec.fov,
-        ...(spec.roll ? { roll: spec.roll } : {}),
-      }),
+  const addCameraForPreset = (
+    preset: CameraPresetId,
+    objectId: string,
+  ) => {
+    const subject = sampleStage(stageRef.current, timeRef.current).objects.find(
+      (entry) => entry.id === objectId,
     );
+    if (!subject) return;
+    const id = crypto.randomUUID();
+    const pose = cameraPresetPoseForObject(preset, subject);
+    edit((current) => ({
+      ...current,
+      activeCameraId: id,
+      cameraSource: "camera",
+      cameras: [
+        ...current.cameras,
+        {
+          id,
+          name: t("editors.stage.ui.cameraName", {
+            number: current.cameras.length + 1,
+          }),
+          pose,
+          keyframes: [],
+        },
+      ],
+    }));
+    setPendingCameraPreset(null);
+    selectCamera(id);
+    setView({ type: "setCameraPreviewCamera", cameraId: id });
   };
+  cameraPresetPlacementRef.current = addCameraForPreset;
+  const armCameraPreset = (preset: CameraPresetId) =>
+    setPendingCameraPreset(preset);
   const commitLiveFov = () => {
     const fov = liveFov.current;
     liveFov.current = null;
@@ -2464,20 +2956,12 @@ export function DirectorStage({
       ground.material instanceof THREE.MeshStandardMaterial &&
       ground.material.transparent &&
       ground.material.opacity === STAGE_UNDERGROUND_GROUND_OPACITY;
-    const previousGridVisible = current.grid.visible;
     const previousBackground = current.scene.background;
     current.renderer.setPixelRatio(1);
     current.renderer.setSize(size.width, size.height, false);
     current.camera.aspect = size.width / size.height;
     current.camera.updateProjectionMatrix();
-    const helpers = [current.translate, current.rotate].map((gizmo) => ({
-      helper: gizmo.getHelper(),
-      visible: gizmo.getHelper().visible,
-    }));
-    for (const { helper } of helpers) helper.visible = false;
-    // Viewport helpers (paths, guides) stay out of the captured frame.
-    const helpersVisible = current.helpers.visible;
-    current.helpers.visible = false;
+    const restoreDirectorLayers = hideDirectorOnlyLayers(current);
     try {
       if (ground instanceof THREE.Mesh) setStageGroundReveal(ground, false);
       applyStageEnvironment(current.scene, environment, undefined, current.renderer);
@@ -2487,7 +2971,6 @@ export function DirectorStage({
         previousBackground.userData.stageBackgroundAssetId === environment.backgroundAsset.assetId
       )
         current.scene.background = previousBackground;
-      current.grid.visible = false;
       displayPose(current, sampleStage(stageRef.current, timeRef.current));
       current.renderer.render(current.scene, current.camera);
       return dom.toDataURL("image/png");
@@ -2509,15 +2992,13 @@ export function DirectorStage({
         resolveAssetUrl,
         () => active.current && runtime.current === current && stageEnvironmentRef.current === restoredEnvironment,
       );
-      current.grid.visible = previousGridVisible;
       const restoredGround = current.scene.getObjectByName(STAGE_GROUND_NAME);
       if (restoredGround instanceof THREE.Mesh) {
         if (previousGroundVisible !== undefined)
           restoredGround.visible = previousGroundVisible;
         setStageGroundReveal(restoredGround, previousGroundReveal);
       }
-      for (const { helper, visible } of helpers) helper.visible = visible;
-      current.helpers.visible = helpersVisible;
+      restoreDirectorLayers();
       current.renderer.render(current.scene, current.camera);
     }
   };
@@ -2842,12 +3323,14 @@ export function DirectorStage({
     let renderer: THREE.WebGLRenderer | undefined;
     // The export scene must not contain the placement gizmos; restore them
     // even on abort or throw, but only while this preview runtime still lives.
-    const helpers = [previewRuntime.translate, previewRuntime.rotate].map(
-      (gizmo) => ({
-        helper: gizmo.getHelper(),
-        inScene: gizmo.getHelper().parent === previewRuntime.scene,
-      }),
-    );
+    const helpers = [
+      previewRuntime.translate,
+      previewRuntime.rotate,
+      previewRuntime.scale,
+    ].map((gizmo) => ({
+      helper: gizmo.getHelper(),
+      inScene: gizmo.getHelper().parent === previewRuntime.scene,
+    }));
     for (const { helper } of helpers) previewRuntime.scene.remove(helper);
     try {
       // The render's publication freezes the stage AND the stills draft:
@@ -2865,6 +3348,7 @@ export function DirectorStage({
       applyStageEnvironment(scene, projectStageEnvironment(exportStage));
       // The export must not contain the viewport helpers either.
       scene.getObjectByName("stage-helpers")?.removeFromParent();
+      scene.getObjectByName("stage-camera-helpers")?.removeFromParent();
       scene.getObjectByName(STAGE_GRID_NAME)?.removeFromParent();
       const root = scene.getObjectByName("stage-objects")!;
       const renderImported = new Map<string, ImportedRuntime>();
@@ -3136,18 +3620,52 @@ export function DirectorStage({
               stage.cameras
                 .filter((rig) => matchesTreeQuery(rig.name))
                 .map((rig) => (
-                  <div className="cw-stage-tree-row" key={rig.id} role="treeitem">
-                    <button
-                      aria-selected={stage.activeCameraId === rig.id}
-                      onClick={() =>
-                        edit((current) => ({
-                          ...current,
-                          activeCameraId: rig.id,
-                        }))
-                      }
+                  <div key={rig.id} role="group">
+                    <div
+                      className="cw-stage-tree-row cw-stage-camera-tree-row"
+                      role="treeitem"
                     >
-                      {rig.name}
-                    </button>
+                      <button
+                        aria-selected={
+                          selection?.kind === "camera" &&
+                          selection.cameraId === rig.id
+                        }
+                        onClick={() => selectCameraEndpoint(rig.id, "camera")}
+                      >
+                        <span className="cw-stage-tree-icon" aria-hidden="true">
+                          ◉
+                        </span>
+                        {rig.name}
+                      </button>
+                      <button
+                        className="cw-stage-row-action"
+                        aria-label={t("editors.stage.ui.splitPreview", {
+                          name: rig.name,
+                        })}
+                        onClick={() => {
+                          setView({ type: "openSplit", cameraId: rig.id });
+                        }}
+                      >
+                        ↗
+                      </button>
+                    </div>
+                    <div
+                      className="cw-stage-tree-row cw-stage-tree-row-child cw-stage-camera-tree-row-child"
+                      role="treeitem"
+                    >
+                      <button
+                        aria-selected={
+                          selection?.kind === "viewpoint" &&
+                          selection.cameraId === rig.id
+                        }
+                        onClick={() => selectCameraEndpoint(rig.id, "viewpoint")}
+                      >
+                        <span className="cw-stage-tree-icon" aria-hidden="true">
+                          ⊙
+                        </span>
+                        {t("editors.stage.ui.viewpoint")}
+                      </button>
+                    </div>
                   </div>
                 ))}
           </div>
@@ -3191,6 +3709,8 @@ export function DirectorStage({
           if (event.key === "Escape") {
             event.preventDefault();
             if (pendingPlacementRef.current) setPendingKind(null);
+            else if (pendingCameraPresetRef.current)
+              setPendingCameraPreset(null);
             else requestClose();
           }
           if (event.key === "Tab") {
@@ -3359,7 +3879,45 @@ export function DirectorStage({
           })}
         </div>
       )}
-      {cameraPreview && <div className="cw-stage-pipframe" aria-hidden="true" />}
+      {cameraPreview && (
+        <div
+          className="cw-stage-pipframe"
+          aria-label={t("editors.stage.ui.cameraPreviewPanel")}
+          style={{ aspectRatio: String(previewAspectRatio) }}
+        >
+          <div className="cw-stage-pip-toolbar">
+            <label className="cw-stage-pip-select">
+              <span className="cw-stage-visually-hidden">
+                {t("editors.stage.ui.cameraPreviewSelect")}
+              </span>
+              <select
+                aria-label={t("editors.stage.ui.cameraPreviewSelect")}
+                value={previewCameraId}
+                onChange={(event) =>
+                  setView({
+                    type: "setCameraPreviewCamera",
+                    cameraId: event.target.value,
+                  })
+                }
+              >
+                {stage.cameras.map((camera) => (
+                  <option value={camera.id} key={camera.id}>
+                    {camera.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="cw-stage-pip-close"
+              type="button"
+              aria-label={t("editors.stage.ui.closeCameraPreview")}
+              onClick={() => setView({ type: "setCameraPreview", enabled: false })}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
       {splitView && (
         <>
           {/* The divider owns its pointer stream; the renderer below
@@ -3881,48 +4439,25 @@ export function DirectorStage({
           )}
           {leftTab === "cameras" && (
             <>
-              <button onClick={addCamera}>{t("editors.stage.ui.addCamera")}</button>
-              <div className="cw-stage-object-list cw-stage-camera-list">
-                {stage.cameras.map((rig) => (
-                  <div className="cw-stage-camera-row" key={rig.id}>
-                    <button
-                      aria-pressed={stage.activeCameraId === rig.id}
-                      onClick={() =>
-                        edit((current) => ({
-                          ...current,
-                          activeCameraId: rig.id,
-                        }))
-                      }
-                    >
-                      {rig.name}
-                    </button>
-                    <button
-                      className="cw-stage-row-action"
-                      aria-label={t("editors.stage.ui.splitPreview", {
-                        name: rig.name,
-                      })}
-                      onClick={() => {
-                        setView({ type: "openSplit", cameraId: rig.id });
-                      }}
-                    >
-                      ↗
-                    </button>
-                  </div>
-                ))}
-              </div>
               <h4>{t("editors.stage.ui.cameraPresets")}</h4>
               <div className="cw-stage-preset-grid">
                 {(Object.keys(CAMERA_PRESETS) as CameraPresetId[]).map(
                   (preset) => (
-                    <button key={preset} onClick={() => applyCameraPreset(preset)}>
+                    <button
+                      key={preset}
+                      aria-pressed={pendingCameraPreset === preset}
+                      onClick={() => armCameraPreset(preset)}
+                    >
                       {t(`editors.stage.ui.preset.${preset}` as never)}
                     </button>
                   ),
                 )}
               </div>
               <h4>{t("editors.stage.ui.cameraMoves")}</h4>
-              <p className="cw-domain-note">
-                {t("editors.stage.ui.cameraHint")}
+              <p className="cw-domain-note" role="status">
+                {pendingCameraPreset
+                  ? t("editors.stage.ui.cameraPresetPlacementHint")
+                  : t("editors.stage.ui.cameraHint")}
               </p>
             </>
           )}
@@ -4372,23 +4907,22 @@ export function DirectorStage({
               <section className="cw-stage-inspector-section">
               <h4>
                 {t("editors.stage.ui.cameraLabel")}{" "}
-                {
-                  stage.cameras.find((camera) => camera.id === sampled.cameraId)
-                    ?.name
-                }
+                {stage.cameras.find((camera) => camera.id === cameraEditId)?.name}
               </h4>
               <label className="cw-domain-field">
                 {t("editors.stage.ui.editCamera")}
                 <select
                   aria-label={t("editors.stage.ui.editCamera")}
-                  value={sampled.cameraId}
-                  onChange={(event) =>
+                  value={cameraEditId}
+                  onChange={(event) => {
+                    const id = event.target.value;
+                    selectCamera(id);
                     edit((current) => ({
                       ...current,
-                      activeCameraId: event.target.value,
+                      activeCameraId: id,
                       cameraSource: "camera",
-                    }))
-                  }
+                    }));
+                  }}
                 >
                   {stage.cameras.map((camera) => (
                     <option value={camera.id} key={camera.id}>
@@ -4402,15 +4936,14 @@ export function DirectorStage({
                 <input
                   aria-label={t("editors.stage.ui.cameraNameAria")}
                   value={
-                    stage.cameras.find(
-                      (camera) => camera.id === sampled.cameraId,
-                    )?.name ?? ""
+                    stage.cameras.find((camera) => camera.id === cameraEditId)
+                      ?.name ?? ""
                   }
                   onChange={(event) =>
                     edit((current) => ({
                       ...current,
                       cameras: current.cameras.map((camera) =>
-                        camera.id === sampled.cameraId
+                        camera.id === cameraEditId
                           ? { ...camera, name: event.target.value }
                           : camera,
                       ),
@@ -4944,8 +5477,13 @@ export function DirectorStage({
               className="cw-stage-export"
               onSubmit={(event) => {
                 event.preventDefault();
+                const fpsField = event.currentTarget.elements.namedItem("stage-fps");
+                const selectedFps =
+                  fpsField instanceof HTMLSelectElement
+                    ? Number(fpsField.value)
+                    : exportFps;
                 setView({ type: "closeExport" });
-                void renderVideo(exportSource, exportClarity, exportFps);
+                void renderVideo(exportSource, exportClarity, selectedFps);
               }}
             >
               <header className="cw-stage-export-head">
@@ -5016,6 +5554,7 @@ export function DirectorStage({
               <label className="cw-stage-export-field">
                 {t("editors.stage.ui.exportFpsLabel")}
                 <select
+                  name="stage-fps"
                   value={exportFps}
                   onChange={(event) =>
                     setExportFps(Number(event.target.value))
