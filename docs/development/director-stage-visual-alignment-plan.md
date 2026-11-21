@@ -38,7 +38,7 @@ Primary comparison states:
 | Stage | Scope | Reference states | Acceptance | Status |
 | --- | --- | --- | --- | --- |
 | V1 | Workbench shell geometry and base color tokens: top bar, left asset rail, right inspector, viewport bounds, and bottom timeline boundary | 02, 11 | No floating-dialog margins on the main shell; panel widths and boundaries are stable at 1920×1080 and 1700×1100; existing console browser flow remains green | complete |
-| V2 | Top bar and asset-library density: compact actions, mode switch, asset tabs, search, cards, and active states | 02, 11, 12 | Header and left rail follow the reference rhythm; active tab and compact control states are visible and keyboard accessible | planned |
+| V2 | Top bar and asset-library density: compact actions, mode switch, asset tabs, search, cards, and active states | 02, 11, 12 | Header and left rail follow the reference rhythm; active tab and compact control states are visible and keyboard accessible | complete |
 | V3 | Object tree and inspector hierarchy: grouped rows, section dividers, fields, toggles, and scroll behavior | 02, 11, 13 | Right side reads as object tree above properties; selected/empty states preserve the same geometry | planned |
 | V4 | Dynamic timeline: transport, ruler, tracks, playhead, frame/keyframe density, and dynamic/static state transition | 09, 11, 12 | Dynamic mode exposes the timeline with reference density; static mode does not reserve an unexplained editor area | planned |
 | V5 | Viewport overlays and transient surfaces: tool rail, PiP, settings menu, viewfinder, help, and shoot state | 03, 13, 14 | Each overlay matches its reference anchor, z-order, padding, and dismissal behavior | planned |

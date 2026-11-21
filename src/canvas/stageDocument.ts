@@ -51,6 +51,12 @@ export interface StageObject extends StageTransform {
   asset?: AssetRef;
   /** Browser URL used to reconstruct a preview; never sent to the backend. */
   source?: string;
+  /** Registered PNG asset for the object-card thumbnail. */
+  thumbnailAsset?: AssetRef;
+  /** Unsaved PNG bytes; the backend turns these into thumbnailAsset on apply. */
+  thumbnailCapture?: string;
+  /** Browser URL projected from thumbnailAsset; never sent to the backend. */
+  thumbnailSource?: string;
   role?: StageAssetRole;
   format?: StageAssetFormat;
   animationNames?: string[];
@@ -220,6 +226,17 @@ const assetRef = (v: unknown): v is AssetRef =>
   typeof v.fingerprint === "string" &&
   /^sha256:[0-9a-f]{64}$/.test(v.fingerprint) &&
   v.kind === "file";
+const imageAssetRef = (v: unknown): v is AssetRef =>
+  record(v) &&
+  nonempty(v.assetId) &&
+  typeof v.revision === "number" &&
+  Number.isInteger(v.revision) &&
+  v.revision >= 1 &&
+  typeof v.fingerprint === "string" &&
+  /^sha256:[0-9a-f]{64}$/.test(v.fingerprint) &&
+  v.kind === "image";
+const imageDataUrl = (v: unknown): v is string =>
+  typeof v === "string" && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(v);
 const sameVector = (a: Vector3Value, b: Vector3Value) =>
   a.x === b.x && a.y === b.y && a.z === b.z;
 function parseTransform(
@@ -477,6 +494,16 @@ export function parseLocalStageValue(
       imported && typeof rawObject?.source === "string" && rawObject.source.trim()
         ? rawObject.source
         : undefined;
+    const thumbnailAsset =
+      rawObject && imageAssetRef(rawObject.thumbnailAsset)
+        ? rawObject.thumbnailAsset
+        : undefined;
+    const thumbnailCapture = imageDataUrl(rawObject?.thumbnailCapture)
+      ? rawObject.thumbnailCapture
+      : undefined;
+    const thumbnailSource = nonempty(rawObject?.thumbnailSource)
+      ? rawObject.thumbnailSource
+      : undefined;
     const animationNames =
       imported && Array.isArray(rawObject?.animationNames)
         ? rawObject.animationNames.filter((name): name is string => nonempty(name))
@@ -503,6 +530,9 @@ export function parseLocalStageValue(
       typeof o.name !== "string" ||
       !color(o.color) ||
       !Array.isArray(o.motionClips) ||
+      (rawObject?.thumbnailAsset != null && !thumbnailAsset) ||
+      (rawObject?.thumbnailCapture != null && !thumbnailCapture) ||
+      (rawObject?.thumbnailSource != null && !thumbnailSource) ||
       (imported &&
         ((!importedAsset && !importedSource) ||
           !["character", "scene"].includes(String(rawObject?.role)) ||
@@ -544,6 +574,9 @@ export function parseLocalStageValue(
       ),
       ...(importedAsset ? { asset: { ...importedAsset } } : {}),
       ...(importedSource ? { source: importedSource } : {}),
+      ...(thumbnailAsset ? { thumbnailAsset: { ...thumbnailAsset } } : {}),
+      ...(thumbnailCapture ? { thumbnailCapture } : {}),
+      ...(thumbnailSource ? { thumbnailSource } : {}),
       ...(imported
         ? {
             role: o.role as StageAssetRole,

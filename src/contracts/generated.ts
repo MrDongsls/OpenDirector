@@ -1217,6 +1217,7 @@ export interface StageObjectInput extends StageTransformInput {
   readonly keyframes?: ReadonlyArray<TransformFrameInput>;
   readonly motionClips?: ReadonlyArray<MotionClipInput>;
   readonly asset?: AssetRefInput | null;
+  readonly thumbnailAsset?: AssetRefInput | null;
   readonly role?: "character" | "scene" | null;
   readonly format?: "glb" | "gltf" | null;
   readonly animationNames?: ReadonlyArray<string>;
@@ -2815,6 +2816,7 @@ export interface StageObject extends StageTransform {
   readonly keyframes: ReadonlyArray<TransformFrame>;
   readonly motionClips: ReadonlyArray<MotionClip>;
   readonly asset: AssetRef | null;
+  readonly thumbnailAsset: AssetRef | null;
   readonly role: "character" | "scene" | null;
   readonly format: "glb" | "gltf" | null;
   readonly animationNames: ReadonlyArray<string>;

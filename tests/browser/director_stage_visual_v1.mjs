@@ -63,6 +63,10 @@ const screenshotPath = path.join(
   outputDirectory,
   `v1-stage-shell-${viewportWidth}x${viewportHeight}.png`,
 );
+const dynamicScreenshotPath = path.join(
+  outputDirectory,
+  `v2-stage-dynamic-${viewportWidth}x${viewportHeight}.png`,
+);
 
 try {
   await page.goto(`${base}/ai-tool/ai-canvas/${projectId}?creation=unified`);
@@ -89,14 +93,17 @@ try {
   const left = page.locator(".cw-stage-left");
   const right = page.locator(".cw-stage-right");
   const bottom = page.locator(".cw-stage-bottom");
+  const staticMode = page.getByRole("button", { name: "Static", exact: true });
+  const dynamicMode = page.getByRole("button", { name: "Dynamic", exact: true });
+  const brand = page.locator(".cw-stage-identity h2");
+  const assetSearch = page.locator(".cw-stage-asset-search input");
+  const objectGrid = page.locator(".cw-stage-object-grid");
   await shell.waitFor();
 
-  const [shellBox, topbarBox, leftBox, rightBox, bottomBox] = await Promise.all(
-    [shell, topbar, left, right, bottom].map((locator) =>
-      locator.boundingBox(),
-    ),
+  const [shellBox, topbarBox, leftBox, rightBox] = await Promise.all(
+    [shell, topbar, left, right].map((locator) => locator.boundingBox()),
   );
-  assert.ok(shellBox && topbarBox && leftBox && rightBox && bottomBox);
+  assert.ok(shellBox && topbarBox && leftBox && rightBox);
   assert.equal(shellBox.x, 0);
   assert.equal(shellBox.y, 0);
   assert.equal(shellBox.width, viewportWidth);
@@ -108,9 +115,54 @@ try {
   assert.equal(rightBox.x + rightBox.width, viewportWidth);
   assert.ok(Math.abs(rightBox.width - 300) <= 1);
   assert.ok(Math.abs(rightBox.y - 52) <= 1);
+  assert.equal(await staticMode.getAttribute("aria-pressed"), "true");
+  assert.equal(await dynamicMode.getAttribute("aria-pressed"), "false");
+  assert.equal(await bottom.count(), 0);
+  await dynamicMode.click();
+  await bottom.waitFor();
+  const timeOutput = bottom.locator(".cw-stage-transport > output").first();
+  await timeOutput.waitFor();
+  const timeAtModeSwitch = await timeOutput.textContent();
+  await page.waitForTimeout(350);
+  assert.equal(
+    await timeOutput.textContent(),
+    timeAtModeSwitch,
+    "switching to dynamic mode must not start playback",
+  );
+  const bottomBox = await bottom.boundingBox();
+  assert.ok(bottomBox);
   assert.equal(bottomBox.x, 0);
   assert.equal(bottomBox.width, viewportWidth);
   assert.ok(Math.abs(bottomBox.height - 280) <= 1);
+  assert.equal(await dynamicMode.getAttribute("aria-pressed"), "true");
+  assert.equal(await staticMode.getAttribute("aria-pressed"), "false");
+  await page.screenshot({ path: dynamicScreenshotPath, fullPage: false });
+  await staticMode.click();
+  await bottom.waitFor({ state: "detached" });
+  assert.equal(await brand.textContent(), "3D Director Stage");
+  assert.equal(
+    await assetSearch.getAttribute("placeholder"),
+    "Search assets",
+  );
+  assert.equal(await objectGrid.evaluate((element) => getComputedStyle(element).display), "grid");
+  assert.equal(
+    await objectGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length),
+    2,
+  );
+  const objectCards = objectGrid.locator("button");
+  const objectPreviews = objectGrid.locator(".cw-stage-object-preview");
+  assert.equal(await objectPreviews.count(), await objectCards.count());
+  const firstPreview = objectPreviews.first();
+  await firstPreview.locator("img").waitFor({ state: "visible" });
+  assert.equal(await firstPreview.getAttribute("data-thumbnail-state"), "ready");
+  const thumbnail = firstPreview.locator("img");
+  assert.equal(await thumbnail.count(), 1);
+  assert.match(await thumbnail.getAttribute("src"), /^blob:/);
+  assert.ok(await thumbnail.evaluate((element) => element.naturalWidth > 0 && element.naturalHeight > 0));
+  assert.equal(
+    await firstPreview.getAttribute("data-stage-object-kind"),
+    "person",
+  );
 
   const [consoleBackground, leftBackground, rightBackground] =
     await Promise.all(
@@ -136,7 +188,8 @@ console.log(
       "52px top bar",
       "248px left rail",
       "300px right rail",
-      "280px bottom timeline boundary",
+      "static mode hides the timeline",
+      "dynamic mode shows a 280px bottom timeline",
       "neutral dark workbench surfaces",
     ],
   }),

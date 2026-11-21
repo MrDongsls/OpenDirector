@@ -899,7 +899,8 @@
             "role": null,
             "format": null,
             "animationNames": [],
-            "hasAnimation": false
+            "hasAnimation": false,
+            "thumbnailAsset": null
           },
           {
             "position": {
@@ -932,7 +933,8 @@
             "role": "scene",
             "format": "glb",
             "animationNames": [],
-            "hasAnimation": false
+            "hasAnimation": false,
+            "thumbnailAsset": null
           }
         ],
         "stills": []

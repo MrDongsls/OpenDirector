@@ -66,6 +66,14 @@ def test_imported_stage_object_requires_and_round_trips_file_identity():
     assert parsed.model_dump(mode='json')['asset']['fingerprint'].startswith('sha256:')
 
 
+def test_stage_object_thumbnail_must_be_an_image_asset():
+    thumbnail = asset('image')
+    parsed = StageObject(**object_data(thumbnailAsset=thumbnail))
+    assert parsed.thumbnailAsset == thumbnail
+    with pytest.raises(ValueError, match='Stage thumbnails must be image assets'):
+        StageObject(**object_data(thumbnailAsset=asset('file')))
+
+
 @pytest.mark.parametrize(
     'changes',
     [

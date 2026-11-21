@@ -413,16 +413,24 @@ export class CreationProjection {
       case "director":
         {
           const objects = await Promise.all(
-            doc.data.objects.map(async (object) =>
-              object.kind === "gltf" && object.asset
-                ? {
-                    ...object,
-                    source: await this.client
+            doc.data.objects.map(async (object) => {
+              const source =
+                object.kind === "gltf" && object.asset
+                  ? await this.client
                       .mediaUrl(object.asset.assetId)
-                      .catch(() => undefined),
-                  }
-                : object,
-            ),
+                      .catch(() => undefined)
+                  : undefined;
+              const thumbnailSource = object.thumbnailAsset
+                ? await this.client
+                    .thumbnailUrl(object.thumbnailAsset.assetId)
+                    .catch(() => undefined)
+                : undefined;
+              return {
+                ...object,
+                ...(source ? { source } : {}),
+                ...(thumbnailSource ? { thumbnailSource } : {}),
+              };
+            }),
           );
         const stills = await Promise.all(
           doc.data.stills.map(async (asset) => ({
@@ -1296,13 +1304,29 @@ export class CreationProjection {
             const {
               source: _source,
               asset: _asset,
+              thumbnailAsset: _thumbnailAsset,
+              thumbnailCapture,
+              thumbnailSource: _thumbnailSource,
               role: _role,
               format: _format,
               animationNames: _animationNames,
               hasAnimation: _hasAnimation,
               ...base
             } = object;
-            if (object.kind !== "gltf") return base;
+            const thumbnailAsset =
+              _thumbnailAsset ??
+              (thumbnailCapture
+                ? await this.importResource({
+                    kind: "image",
+                    title: `${node.data.title ?? "director-stage"}-${object.name}-thumbnail`,
+                    src: thumbnailCapture,
+                  })
+                : undefined);
+            if (object.kind !== "gltf")
+              return {
+                ...base,
+                ...(thumbnailAsset ? { thumbnailAsset } : {}),
+              };
             const asset =
               object.asset ??
               (object.source
@@ -1314,7 +1338,15 @@ export class CreationProjection {
                 : undefined);
             if (!asset)
               throw new Error(tNow("errors.backend.directorAssetMissing"));
-            return { ...base, asset, role: object.role, format: object.format, animationNames: object.animationNames, hasAnimation: object.hasAnimation };
+            return {
+              ...base,
+              asset,
+              ...(thumbnailAsset ? { thumbnailAsset } : {}),
+              role: object.role,
+              format: object.format,
+              animationNames: object.animationNames,
+              hasAnimation: object.hasAnimation,
+            };
           }),
         );
         // Captures import in list order so the drawer keeps its sequence;

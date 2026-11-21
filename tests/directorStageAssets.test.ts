@@ -22,6 +22,33 @@ const asset = {
   fingerprint: `sha256:${"a".repeat(64)}`,
   kind: "file" as const,
 };
+const thumbnailAsset = {
+  assetId: "asset-thumbnail",
+  revision: 1,
+  fingerprint: `sha256:${"b".repeat(64)}`,
+  kind: "image" as const,
+};
+
+test("stage object thumbnails accept nullable projections and retain image asset identity", () => {
+  const stage = createLocalStage();
+  const [person] = stage.objects;
+  const projected = parseLocalStageValue({
+    ...stage,
+    objects: [{ ...person, thumbnailAsset: null }],
+  });
+  assert.equal(projected.objects[0]!.thumbnailAsset, undefined);
+
+  const pinned = parseLocalStageValue({
+    ...stage,
+    objects: [{ ...person, thumbnailAsset }],
+  });
+  assert.deepEqual(pinned.objects[0]!.thumbnailAsset, thumbnailAsset);
+  assert.deepEqual(
+    parseLocalStageValue(JSON.parse(JSON.stringify(pinned))).objects[0]!
+      .thumbnailAsset,
+    thumbnailAsset,
+  );
+});
 
 test("GLB/GLTF stage objects accept transient previews and retain stable asset identity", () => {
   const stage = createLocalStage();
@@ -348,6 +375,39 @@ function directorWrite(node: {
   };
 }
 
+test("director saves materialize object thumbnail captures as image assets", async () => {
+  const base = createLocalStage();
+  const stage = parseLocalStageValue({
+    ...base,
+    objects: [
+      {
+        ...base.objects[0]!,
+        thumbnailCapture: "data:image/png;base64,aVBoTkc=",
+      },
+    ],
+  });
+  const write = directorWrite({
+    id: "director-node",
+    title: "Stage board",
+    localStage: stage,
+  });
+  const document = await write.document;
+  const data = document.data as unknown as { objects: readonly unknown[] };
+  const object = data.objects[0] as {
+    thumbnailAsset?: { assetId: string; kind: string };
+    thumbnailCapture?: string;
+  };
+  assert.deepEqual(object.thumbnailAsset, {
+    assetId: "imported-1",
+    revision: 1,
+    fingerprint: `sha256:${"1".padStart(64, "0")}`,
+    kind: "image",
+  });
+  assert.equal(object.thumbnailCapture, undefined);
+  assert.deepEqual(write.imported, [
+    { name: "Stage board-人物 1-thumbnail.png", kind: "image" },
+  ]);
+});
 test("director saves register unsaved model bytes and captured stills as project assets", async () => {
   const stage = parseLocalStageValue({
     ...createLocalStage(),

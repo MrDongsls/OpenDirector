@@ -11635,6 +11635,18 @@
             "default": null,
             "description": "Registered GLB or self-contained GLTF asset for an imported stage object."
           },
+          "thumbnailAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Registered image asset used by the stage object card thumbnail."
+          },
           "role": {
             "anyOf": [
               {
@@ -27427,6 +27439,18 @@
             "default": null,
             "description": "Registered GLB or self-contained GLTF asset for an imported stage object."
           },
+          "thumbnailAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Registered image asset used by the stage object card thumbnail."
+          },
           "role": {
             "anyOf": [
               {
@@ -27488,6 +27512,7 @@
           "keyframes",
           "motionClips",
           "asset",
+          "thumbnailAsset",
           "role",
           "format",
           "animationNames",

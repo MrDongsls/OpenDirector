@@ -1,5 +1,10 @@
 import { useEditorCommit, type EditorApplyResult } from "./useEditorCommit";
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -113,6 +118,182 @@ const vector = (value: THREE.Vector3): Vector3Value => ({
   y: value.y,
   z: value.z,
 });
+const THUMBNAIL_RENDER_SIZE = { width: 256, height: 192 } as const;
+const THUMBNAIL_CROP_SIZE = { width: 192, height: 112 } as const;
+const THUMBNAIL_ZERO_TRANSFORM: StageTransform = {
+  position: { x: 0, y: 0, z: 0 },
+  rotation: { x: 0, y: 0, z: 0 },
+  scale: { x: 1, y: 1, z: 1 },
+};
+
+function cropStageThumbnail(renderer: THREE.WebGLRenderer): string {
+  const source = renderer.domElement;
+  const canvas = document.createElement("canvas");
+  canvas.width = THUMBNAIL_CROP_SIZE.width;
+  canvas.height = THUMBNAIL_CROP_SIZE.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Stage thumbnail canvas is unavailable");
+  const cropX = Math.max(
+    0,
+    Math.floor((source.width - THUMBNAIL_CROP_SIZE.width) / 2),
+  );
+  const cropY = Math.max(
+    0,
+    Math.floor((source.height - THUMBNAIL_CROP_SIZE.height) / 2),
+  );
+  context.drawImage(
+    source,
+    cropX,
+    cropY,
+    THUMBNAIL_CROP_SIZE.width,
+    THUMBNAIL_CROP_SIZE.height,
+    0,
+    0,
+    THUMBNAIL_CROP_SIZE.width,
+    THUMBNAIL_CROP_SIZE.height,
+  );
+  return canvas.toDataURL("image/png");
+}
+
+function renderStageObjectModelThumbnail(
+  model: THREE.Group,
+  modelSharesAssetResources: boolean,
+): string | null {
+  let renderer: THREE.WebGLRenderer | null = null;
+  let ground: THREE.Mesh | null = null;
+  try {
+    renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      preserveDrawingBuffer: true,
+    });
+    renderer.setPixelRatio(1);
+    renderer.setSize(
+      THUMBNAIL_RENDER_SIZE.width,
+      THUMBNAIL_RENDER_SIZE.height,
+      false,
+    );
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#171717");
+    scene.add(new THREE.HemisphereLight("#d9e5ff", "#222222", 1.6));
+    const keyLight = new THREE.DirectionalLight("#ffffff", 3.2);
+    keyLight.position.set(3, 5, 4);
+    keyLight.castShadow = true;
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight("#7190c8", 1.1);
+    fillLight.position.set(-3, 2, -2);
+    scene.add(fillLight);
+
+    ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(8, 8),
+      new THREE.MeshStandardMaterial({ color: "#242424", roughness: 0.92 }),
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    scene.add(model);
+    scene.updateMatrixWorld(true);
+
+    const bounds = new THREE.Box3().setFromObject(model);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const extent = Math.max(size.x, size.y, size.z, 0.5);
+    const camera = new THREE.PerspectiveCamera(
+      32,
+      THUMBNAIL_RENDER_SIZE.width / THUMBNAIL_RENDER_SIZE.height,
+      0.01,
+      100,
+    );
+    const distance = extent / (2 * Math.tan(THREE.MathUtils.degToRad(32) / 2));
+    camera.position.set(
+      center.x + distance * 0.85,
+      center.y + extent * 0.25,
+      center.z + distance * 1.15,
+    );
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+    renderer.render(scene, camera);
+    return cropStageThumbnail(renderer);
+  } catch {
+    return null;
+  } finally {
+    if (ground) {
+      ground.geometry.dispose();
+      if (ground.material instanceof THREE.Material) ground.material.dispose();
+    }
+    if (!modelSharesAssetResources) disposeObject(model);
+    renderer?.forceContextLoss();
+    renderer?.dispose();
+  }
+}
+
+function renderStageObjectThumbnailNow(
+  value: StageObject,
+  loaded?: LoadedStageAsset,
+): string | null {
+  const normalized: StageObject = {
+    ...value,
+    ...THUMBNAIL_ZERO_TRANSFORM,
+  };
+  if (loaded) {
+    normalized.source = value.source;
+    return renderStageObjectModelThumbnail(
+      cloneImportedAsset(normalized, loaded),
+      true,
+    );
+  }
+  return renderStageObjectModelThumbnail(buildObject(normalized), false);
+}
+
+function StageObjectPreview({
+  object,
+}: {
+  object: Pick<
+    StageObject,
+    "kind" | "color" | "thumbnailCapture" | "thumbnailSource"
+  >;
+}) {
+  const thumbnail = object.thumbnailCapture ?? object.thumbnailSource;
+  return (
+    <span
+      className="cw-stage-object-preview"
+      data-stage-object-kind={object.kind}
+      data-thumbnail-state={thumbnail ? "ready" : "empty"}
+      aria-hidden="true"
+    >
+      {thumbnail ? (
+        <img src={thumbnail} alt="" />
+      ) : (
+        <span className="cw-stage-object-preview-empty" />
+      )}
+    </span>
+  );
+}
+
+function materializeStageThumbnails(
+  stage: LocalStageDocument,
+): LocalStageDocument {
+  let changed = false;
+  const objects = stage.objects.map((object) => {
+    if (
+      object.thumbnailCapture ||
+      object.thumbnailSource ||
+      object.kind === "gltf"
+    )
+      return object;
+    const thumbnailCapture = renderStageObjectThumbnailNow(object);
+    if (!thumbnailCapture) return object;
+    changed = true;
+    return { ...object, thumbnailCapture };
+  });
+  return changed ? { ...stage, objects } : stage;
+}
+
 type CameraPresetId =
   | "frontMedium" | "frontClose" | "frontWide" | "sideTrack" | "sideClose"
   | "backMedium" | "overheadWide" | "highAngle" | "lowAngle" | "lowWide"
@@ -482,9 +663,11 @@ export function DirectorStage({
   const { t } = useI18n();
   const [historyState, setHistoryState] = useState(() =>
     createStageHistory(
-      node.data.localStage
-        ? parseLocalStageValue(node.data.localStage, t)
-        : createLocalStage(t),
+      materializeStageThumbnails(
+        node.data.localStage
+          ? parseLocalStageValue(node.data.localStage, t)
+          : createLocalStage(t),
+      ),
     ),
   );
   const commit = useEditorCommit(onClose);
@@ -496,6 +679,7 @@ export function DirectorStage({
     [error, setError] = useState(""),
     [playing, setPlaying] = useState(false),
     [time, setTime] = useState(0),
+    [previewMode, setPreviewMode] = useState<"static" | "dynamic">("static"),
     [ready, setReady] = useState(false);
   const [inserted, setInserted] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
@@ -517,6 +701,7 @@ export function DirectorStage({
   }, []);
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [assetRole, setAssetRole] = useState<StageAssetRole>("character");
+  const [assetQuery, setAssetQuery] = useState("");
   const [leftTab, setLeftTab] = useState<"characters" | "objects" | "cameras" | "background">("characters");
   const [cameraPreview, setCameraPreview] = useState(false);
   const [splitView, setSplitView] = useState(false);
@@ -1146,7 +1331,7 @@ export function DirectorStage({
     displayPose(runtime.current, sampleStage(stage, time));
   }, [stage, time, ready]);
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || previewMode !== "dynamic") return;
     const initial = timeRef.current,
       start = performance.now();
     let frame = 0;
@@ -1164,17 +1349,37 @@ export function DirectorStage({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing]);
+  }, [playing, previewMode]);
 
   const addObject = (kind: StageObject["kind"]) => {
     const id = crypto.randomUUID();
+    const color =
+      kind === "person"
+        ? "#d0d0d0"
+        : kind === "box"
+          ? "#c4c4c4"
+          : "#b8b8b8";
+    const thumbnailObject: StageObject = {
+      id,
+      kind,
+      name: t(titles[kind]),
+      color,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      visible: true,
+      locked: false,
+      opacity: 1,
+      keyframes: [],
+      motionClips: [],
+    };
+    const thumbnailCapture = renderStageObjectThumbnailNow(thumbnailObject);
     edit((current) => ({
       ...current,
       objects: [
         ...current.objects,
         {
-          id,
-          kind,
+          ...thumbnailObject,
           name: `${t(titles[kind])} ${current.objects.length + 1}`,
           color:
             kind === "person"
@@ -1187,6 +1392,7 @@ export function DirectorStage({
           scale: { x: 1, y: 1, z: 1 },
           keyframes: [],
           motionClips: [],
+          ...(thumbnailCapture ? { thumbnailCapture } : {}),
         },
       ],
     }));
@@ -1504,28 +1710,44 @@ export function DirectorStage({
       }
       const id = crypto.randomUUID();
       const name = file.name.replace(/\.(?:glb|gltf)$/i, "") || file.name;
+      const importedObject: StageObject = {
+        id,
+        kind: "gltf",
+        name,
+        color: "#b8c5ff",
+        role: assetRole,
+        format: probed.format,
+        source,
+        animationNames: loaded.animations.map(
+          // Fallback must match the backend probe's animation_{index}.
+          (clip, index) => clip.name.trim() || `animation_${index}`,
+        ),
+        hasAnimation: loaded.animations.length > 0,
+        position: { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+        visible: true,
+        locked: false,
+        opacity: 1,
+        keyframes: [],
+        motionClips: [],
+      };
+      const thumbnailCapture = renderStageObjectThumbnailNow(
+        importedObject,
+        loaded,
+      );
       edit((current) => ({
         ...current,
         objects: [
           ...current.objects,
           {
-            id,
-            kind: "gltf",
-            name,
-            color: "#b8c5ff",
-            role: assetRole,
-            format: probed.format,
-            source,
-            animationNames: loaded.animations.map(
-              // Fallback must match the backend probe's animation_{index}.
-              (clip, index) => clip.name.trim() || `animation_${index}`,
-            ),
-            hasAnimation: loaded.animations.length > 0,
+            ...importedObject,
             position: { x: current.objects.length * 1.3, y: 0, z: 0 },
             rotation: { x: 0, y: 0, z: 0 },
             scale: { x: 1, y: 1, z: 1 },
             keyframes: [],
             motionClips: [],
+            ...(thumbnailCapture ? { thumbnailCapture } : {}),
           },
         ],
       }));
@@ -2029,30 +2251,72 @@ export function DirectorStage({
         <header className="cw-stage-topbar">
           <div className="cw-stage-identity">
             <h2 id={consoleId}>
-              {t("editors.stage.ui.title", { title: node.data.title })}
+              {t("editors.stage.ui.brand")}
             </h2>
-            <p>{t("editors.stage.ui.subtitle")}</p>
+            <p>
+              {t("editors.stage.ui.title", { title: node.data.title })}
+              {" · "}
+              {t("editors.stage.ui.subtitle")}
+            </p>
+          </div>
+          <div
+            className="cw-stage-preview-mode"
+            role="group"
+            aria-label={t("editors.stage.ui.previewMode")}
+          >
+            <button
+              type="button"
+              aria-pressed={previewMode === "static"}
+              onClick={() => {
+                setPreviewMode("static");
+                setPlaying(false);
+              }}
+            >
+              {t("editors.stage.ui.previewModeStatic")}
+            </button>
+            <button
+              type="button"
+              aria-pressed={previewMode === "dynamic"}
+              onClick={() => {
+                setPreviewMode("dynamic");
+                setPlaying(false);
+              }}
+            >
+              {t("editors.stage.ui.previewModeDynamic")}
+            </button>
           </div>
           <div className="cw-stage-toolbar">
           <button
+            data-icon="↶"
+            title={t("editors.stage.ui.undo")}
+            aria-label={t("editors.stage.ui.undo")}
             disabled={!history.current.past.length || renderProgress !== null}
             onClick={() => navigate("undo")}
           >
             {t("editors.stage.ui.undo")}
           </button>
           <button
+            data-icon="↷"
+            title={t("editors.stage.ui.redo")}
+            aria-label={t("editors.stage.ui.redo")}
             disabled={!history.current.future.length || renderProgress !== null}
             onClick={() => navigate("redo")}
           >
             {t("editors.stage.ui.redo")}
           </button>
           <button
+            data-icon="⇩"
+            title={t("editors.stage.ui.importJson")}
+            aria-label={t("editors.stage.ui.importJson")}
             disabled={renderProgress !== null}
             onClick={() => importInput.current?.click()}
           >
             {t("editors.stage.ui.importJson")}
           </button>
           <button
+            data-icon="⇧"
+            title={t("editors.stage.ui.exportJson")}
+            aria-label={t("editors.stage.ui.exportJson")}
             disabled={renderProgress !== null}
             onClick={() => {
               // Exports carry no model bytes: an import that exists only as a
@@ -2087,6 +2351,9 @@ export function DirectorStage({
             {t("editors.stage.ui.exportJson")}
           </button>
           <button
+            data-icon="◉"
+            title={t("editors.stage.ui.screenshot")}
+            aria-label={t("editors.stage.ui.screenshot")}
             disabled={!ready || stillSaving}
             onClick={() => void captureStill()}
           >
@@ -2095,6 +2362,9 @@ export function DirectorStage({
               : t("editors.stage.ui.screenshot")}
           </button>
           <button
+            data-icon="▤"
+            title={t("editors.stage.ui.shotMaterials")}
+            aria-label={t("editors.stage.ui.shotMaterials")}
             aria-expanded={drawerOpen}
             onClick={() => setDrawerOpen((open) => !open)}
           >
@@ -2102,12 +2372,20 @@ export function DirectorStage({
             {stills.length ? ` (${stills.length})` : ""}
           </button>
           <button
+            data-icon="▶"
+            title={t("editors.stage.ui.renderMp4")}
+            aria-label={t("editors.stage.ui.renderMp4")}
             disabled={!ready || renderProgress !== null}
             onClick={openExport}
           >
             {t("editors.stage.ui.renderMp4")}
           </button>
-          <button onClick={() => setHelpOpen((open) => !open)}>
+          <button
+            data-icon="?"
+            title={t("editors.stage.ui.shortcuts")}
+            aria-label={t("editors.stage.ui.shortcuts")}
+            onClick={() => setHelpOpen((open) => !open)}
+          >
             {t("editors.stage.ui.shortcuts")}
           </button>
         </div>
@@ -2118,6 +2396,9 @@ export function DirectorStage({
             {t(dirty ? "editors.stage.ui.unsavedChip" : "editors.stage.ui.savedChip")}
           </span>
           <button
+            data-icon="⌗"
+            title={t("editors.stage.ui.viewfinder")}
+            aria-label={t("editors.stage.ui.viewfinder")}
             aria-pressed={viewfinder}
             onClick={() => {
               setViewfinder((current) => {
@@ -2134,12 +2415,18 @@ export function DirectorStage({
             {t("editors.stage.ui.viewfinder")}
           </button>
           <button
+            data-icon="◉"
+            title={t("editors.stage.ui.cameraPreview")}
+            aria-label={t("editors.stage.ui.cameraPreview")}
             aria-pressed={cameraPreview}
             onClick={() => setCameraPreview((current) => !current)}
           >
             {t("editors.stage.ui.cameraPreview")}
           </button>
           <button
+            data-icon="▣"
+            title={t("editors.stage.ui.aspectMask")}
+            aria-label={t("editors.stage.ui.aspectMask")}
             aria-pressed={aspectMask}
             onClick={() => setAspectMask((current) => !current)}
           >
@@ -2214,6 +2501,25 @@ export function DirectorStage({
           </div>
         )}
         <aside className="cw-stage-left">
+          <div className="cw-stage-left-head">
+            <h3>
+              <span aria-hidden="true">◇</span>
+              {t("editors.stage.ui.assetLibrary")}
+            </h3>
+            <span aria-hidden="true">▣</span>
+          </div>
+          <label className="cw-stage-asset-search">
+            <span className="cw-stage-visually-hidden">
+              {t("editors.stage.ui.assetSearchAria")}
+            </span>
+            <input
+              type="search"
+              value={assetQuery}
+              placeholder={t("editors.stage.ui.assetSearchPlaceholder")}
+              aria-label={t("editors.stage.ui.assetSearchAria")}
+              onChange={(event) => setAssetQuery(event.target.value)}
+            />
+          </label>
           <div className="cw-stage-tabs" role="tablist">
             {(["characters", "objects", "cameras", "background"] as const).map(
               (tab) => (
@@ -2270,7 +2576,7 @@ export function DirectorStage({
                   {assetNotice}
                 </p>
               )}
-              <div className="cw-stage-object-list">
+              <div className="cw-stage-object-list cw-stage-object-grid">
                 {stage.objects
                   .filter((item) =>
                     leftTab === "characters"
@@ -2279,14 +2585,25 @@ export function DirectorStage({
                       : item.kind !== "person" &&
                         !(item.kind === "gltf" && item.role === "character"),
                   )
+                  .filter((item) =>
+                    item.name.toLocaleLowerCase().includes(
+                      assetQuery.trim().toLocaleLowerCase(),
+                    ),
+                  )
                   .map((item) => (
                     <button
                       key={item.id}
                       aria-pressed={selected === item.id}
                       onClick={() => setSelected(item.id)}
                     >
-                      <span style={{ background: item.color }} />
-                      {item.name}
+                      <StageObjectPreview object={item} />
+                      <span className="cw-stage-object-card-name">
+                        <span
+                          className="cw-stage-object-color"
+                          style={{ background: item.color }}
+                        />
+                        {item.name}
+                      </span>
                     </button>
                   ))}
               </div>
@@ -2295,7 +2612,7 @@ export function DirectorStage({
           {leftTab === "cameras" && (
             <>
               <button onClick={addCamera}>{t("editors.stage.ui.addCamera")}</button>
-              <div className="cw-stage-object-list">
+              <div className="cw-stage-object-list cw-stage-camera-list">
                 {stage.cameras.map((rig) => (
                   <div className="cw-stage-camera-row" key={rig.id}>
                     <button
@@ -2739,7 +3056,8 @@ export function DirectorStage({
                 {t("editors.stage.ui.resetCamera")}
               </button>
         </aside>
-        <footer className="cw-stage-bottom">
+        {previewMode === "dynamic" && (
+          <footer className="cw-stage-bottom">
           <div className="cw-stage-transport">
             <button
               disabled={!ready}
@@ -2909,7 +3227,8 @@ export function DirectorStage({
               </div>
             ))}
           </section>
-        </footer>
+          </footer>
+        )}
           <input
             className="cw-domain-file-input"
             ref={importInput}

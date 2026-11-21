@@ -384,6 +384,7 @@ class StageObject(StageTransform):
     keyframes: tuple[TransformFrame, ...] = Field(default=(), description='Ordered animation keyframes.')
     motionClips: tuple[MotionClip, ...] = Field(default=(), description='Ordered procedural motion intervals.')
     asset: AssetRef | None = Field(default=None, description='Registered GLB or self-contained GLTF asset for an imported stage object.')
+    thumbnailAsset: AssetRef | None = Field(default=None, description='Registered image asset used by the stage object card thumbnail.')
     role: Literal['character', 'scene'] | None = Field(default=None, description='Imported stage object role.')
     format: Literal['glb', 'gltf'] | None = Field(default=None, description='Imported stage asset container format.')
     animationNames: tuple[str, ...] = Field(default=(), description='Animation clip names discovered in the imported asset.')
@@ -419,6 +420,8 @@ class StageObject(StageTransform):
                 'Procedural stage objects cannot carry imported asset metadata. '
                 '非导入的舞台对象不能携带导入素材信息。'
             )
+        if self.thumbnailAsset is not None and self.thumbnailAsset.kind != 'image':
+            raise ValueError('Stage thumbnails must be image assets. 舞台缩略图必须是图片素材。')
         return self
 
 
